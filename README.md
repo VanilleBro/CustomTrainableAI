@@ -28,6 +28,35 @@ Unter [Releases](../../releases) liegen:
 | **Profile** | Speichern, Exportieren und Importieren (`.json`, inkl. aller Gewichte, Einstellungen und Verlauf). Weitertrainieren setzt bei der letzten Generation fort |
 | **Backups** | Alle 2 Minuten automatisch, z.B. `Fangenbackup19.11.2026_14.32.json`. Das vorherige Backup desselben Profils wird dabei ersetzt. Wiederherstellen auf der Startseite |
 
+## Browser-Spiele in Chrome (z.B. Neon Flap)
+
+Die App startet ein **eigenes, ferngesteuertes Chrome** (eigenes Profil, getrennt von deinem normalen Chrome) mit
+mehreren Fenstern. **Jedes Fenster ist ein Agent, der gleichzeitig spielt** – die Anzahl stellst du im Tab
+„Bereiche“ ein (z.B. 12). Bild und Eingaben laufen direkt über Chrome (DevTools): Die Fenster dürfen sich
+überlappen oder verdeckt sein, Maus und Tastatur bleiben frei. Nur schließen oder minimieren darf man sie nicht.
+
+Fertige Vorlage **„Neon Flap (Chrome)“** für https://addict-games.netlify.app/#/flap:
+
+1. Startseite → **Vorlage: Neon Flap (Chrome)** → Tab „Bereiche“ → **Chrome-Fenster öffnen**.
+2. Beim allerersten Mal fragt die Seite nach einem Namen für die Bestenliste: in **einem** Fenster eintragen und
+   danach **Spiel-Einstellungen setzen** klicken. Das Skript stellt in allen Fenstern kleinste Lücke, Tempo „Irre“
+   und $1 Einsatz ein (anpassbar im Feld „Einstellungs-Skript“).
+3. Tab „Training“ → **▶ Training starten**.
+
+Belohnung: Tore werden direkt aus der Seite gezählt (+3), Crash beendet die Runde (−5), dazu kleine Belohnungen
+fürs Fliegen und dafür, auf Höhe der nächsten Lücke zu sein. Das Spiel nutzt Spielgeld („kein echtes Geld“): jede
+Runde kostet $1, ab 1 Tor gibt es den Einsatz zurück. Wird das Geld knapp, hilft der Gratis-Bonus oder im Profil der
+Seite „Neustart mit $1.000“.
+
+Eigene Browser-Spiele: Adresse und CSS-Selektor des Spielfelds (meist `canvas`) im Tab „Bereiche“ eintragen.
+Mit dem Regeltyp **„Browser-Wert (JavaScript)“** lassen sich Punktestand oder Game Over direkt aus der Seite lesen.
+
+## Agenten beobachten
+
+Im Tab „Training“ zeigt **„Agenten dieser Generation“** jeden Agenten als Kachel: grün = gut (Belohnung über 0),
+rot = schlecht, blau = spielt gerade, grau = wartet – plus die Zählung „x gut · y schlecht“. Im **Simulator**
+(Übungsspiele) stellst du ein, wie viele Agenten gleichzeitig spielen (0 = alle), und siehst alle live nebeneinander.
+
 ## Schnellstart mit dem Übungsspiel
 
 1. Startseite → **Übungsspiel „Fangen“ öffnen** (ein kleines Spiel, das mitgeliefert wird).

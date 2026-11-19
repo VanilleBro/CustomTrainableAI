@@ -14,6 +14,7 @@ import com.sun.jna.platform.win32.WinDef.LPARAM
 import com.sun.jna.platform.win32.WinDef.POINT
 import com.sun.jna.platform.win32.WinDef.WPARAM
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import java.awt.GraphicsEnvironment
 import java.awt.Rectangle
@@ -69,14 +70,34 @@ fun primaryScreenBounds(): Rectangle =
     GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration.bounds
 
 /** Bildschirmaufnahme über java.awt.Robot. */
-class DesktopCapturer(private val guard: WindowGuard? = null) : ScreenCapturer {
+class DesktopCapturer(
+    private val guard: WindowGuard? = null,
+    /** Bild für virtuelle Bereiche (Chrome-Instanzen), null = keins. */
+    private val virtual: ((ScreenRect) -> Frame?)? = null,
+) : ScreenCapturer {
     private val robot by lazy { Robot() }
     private val lock = Any()
 
     override suspend fun capture(areas: List<ScreenRect>): List<Frame?> = withContext(Dispatchers.IO) {
-        val raw = grabAll(areas)
-        // Fenster weg/verdeckt -> kein Bild (die Engine pausiert die Runde)
-        if (guard == null) raw else raw.mapIndexed { i, f -> f?.takeIf { guard.areaOk(areas[i]) } }
+        val isVirtual = areas.map { it.x >= ChromeBridge.VIRTUAL_X }
+        val screenAreas = areas.filterIndexed { i, _ -> !isVirtual[i] }
+        val raw = if (screenAreas.isEmpty()) emptyList() else grabAll(screenAreas)
+        // Chrome-Bilder parallel dekodieren
+        val virtualFrames = kotlinx.coroutines.coroutineScope {
+            areas.mapIndexed { i, a ->
+                if (isVirtual[i]) async(Dispatchers.Default) { runCatching { virtual?.invoke(a) }.getOrNull() } else null
+            }.map { it?.await() }
+        }
+        var k = 0
+        areas.mapIndexed { i, a ->
+            if (isVirtual[i]) {
+                virtualFrames[i]
+            } else {
+                val f = raw.getOrNull(k++)
+                // Fenster weg/verdeckt -> kein Bild (die Engine pausiert die Runde)
+                if (guard == null) f else f?.takeIf { guard.areaOk(a) }
+            }
+        }
     }
 
     private fun grabAll(areas: List<ScreenRect>): List<Frame?> {
@@ -125,6 +146,8 @@ class DesktopInput(
     private val guard: WindowGuard? = null,
     /** Findet ein eigenes Übungsspiel-Fenster zum obersten Fenster (für direkte Eingabe). */
     private val practiceFor: (HWND) -> PracticeWindow? = { null },
+    /** Chrome-Tabs für die Eingabe-Methode CHROME. */
+    private val chrome: ChromeBridge? = null,
 ) : InputController {
     @Volatile var method = InputMethod.REAL
     @Volatile var tapMs = 30
@@ -153,6 +176,7 @@ class DesktopInput(
 
     override suspend fun apply(commands: Map<Int, InstanceCommand>) = withContext(Dispatchers.IO) {
         synchronized(lock) {
+            if (method == InputMethod.CHROME && chrome != null) return@synchronized applyChrome(commands, chrome)
             val background = method == InputMethod.BACKGROUND && U32.INSTANCE != null
             val safe = commands.mapValues { (_, c) -> sanitize(c, background) }
             if (background) applyBackground(safe) else applyReal(safe)
@@ -167,6 +191,12 @@ class DesktopInput(
                 if (realDownAt != null) robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
                 realDownAt = null
             }
+            if (chrome != null) for ((_, st) in cr) {
+                val t = st.tab ?: continue
+                st.downAt?.let { chrome.mouse(t, "mouseReleased", st.pos ?: it, false) }
+                for (k in st.keys) chrome.key(t, k, false)
+            }
+            cr.clear()
             for ((_, st) in bg) {
                 if (st.downAt != null) st.hwnd?.let { h -> st.pos?.let { post(h, U32.WM_LBUTTONUP, 0, it) } }
                 st.downAt = null
@@ -193,6 +223,65 @@ class DesktopInput(
             keys = if (keysOk) c.keys else emptySet(),
             keyTaps = if (keysOk) c.keyTaps else emptyList(),
         )
+    }
+
+    // ================= CHROME (DevTools) =================
+
+    private class Cr {
+        var tab: ChromeBridge.Tab? = null
+        var downAt: ScreenPoint? = null
+        var pos: ScreenPoint? = null
+        var keys = setOf<String>()
+    }
+    private val cr = HashMap<Int, Cr>()
+
+    private fun applyChrome(commands: Map<Int, InstanceCommand>, chrome: ChromeBridge) {
+        var missing = false
+        for ((i, c) in commands) {
+            val st = cr.getOrPut(i) { Cr() }
+            val tab = chrome.tabFor(c.area) ?: st.tab
+            if (tab == null) {
+                if (c != InstanceCommand.NONE && c.area != null) missing = true
+                continue
+            }
+            if (st.tab != null && st.tab !== tab) {
+                st.downAt?.let { chrome.mouse(st.tab!!, "mouseReleased", st.pos ?: it, false) }
+                for (k in st.keys) chrome.key(st.tab!!, k, false)
+                st.downAt = null; st.keys = emptySet()
+            }
+            st.tab = tab
+            // Halten / Ziehen
+            val want = c.drag ?: c.holds.firstOrNull()?.let { Drag(it, it) }
+            val down = st.downAt
+            if (want == null) {
+                if (down != null) chrome.mouse(tab, "mouseReleased", st.pos ?: down, false)
+                st.downAt = null
+            } else {
+                if (down == null || down != want.from) {
+                    if (down != null) chrome.mouse(tab, "mouseReleased", st.pos ?: down, false)
+                    chrome.mouse(tab, "mouseMoved", want.from, false)
+                    chrome.mouse(tab, "mousePressed", want.from, true)
+                    st.downAt = want.from
+                    st.pos = want.from
+                }
+                if (st.pos != want.to) {
+                    chrome.mouse(tab, "mouseMoved", want.to, true)
+                    st.pos = want.to
+                }
+            }
+            // Klicks
+            for (t in c.taps) {
+                chrome.mouse(tab, "mouseMoved", t, false)
+                chrome.mouse(tab, "mousePressed", t, true)
+                chrome.mouse(tab, "mouseReleased", t, false)
+            }
+            // Tasten
+            for (k in st.keys - c.keys) chrome.key(tab, k, false)
+            for (k in c.keys - st.keys) chrome.key(tab, k, true)
+            st.keys = c.keys
+            for (k in c.keyTaps) { chrome.key(tab, k, true); chrome.key(tab, k, false) }
+        }
+        warning = if (missing) "Chrome-Tab zu einem Bereich nicht gefunden – im Bereiche-Tab „Bereiche aus Chrome übernehmen“." else null
     }
 
     // ================= REAL =================

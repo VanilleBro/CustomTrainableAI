@@ -104,10 +104,24 @@ fun TrainingTab(state: AppState) {
             }
             if (p.practiceKind != null) {
                 LabeledSwitch("Im Simulator trainieren (ohne Bildschirm, zum Testen)", state.simulate, { state.simulate = it })
-                if (state.simulate) LabeledSwitch("Echtzeit (zum Zuschauen) – aus = so schnell wie möglich", state.simRealtime, { state.simRealtime = it })
+                if (state.simulate) {
+                    LabeledSwitch("Echtzeit (zum Zuschauen) – aus = so schnell wie möglich", state.simRealtime, { state.simRealtime = it })
+                    Fields {
+                        IntField("Agenten gleichzeitig (0 = alle)", p.simParallel, { v -> state.update { it.copy(simParallel = v) } }, Modifier.width(230.dp), 0, 64)
+                        IntField("Agenten pro Generation", p.evolution.population, { v -> state.update { it.copy(evolution = it.evolution.copy(population = v)) } }, Modifier.width(200.dp), 2, 1000)
+                    }
+                    Hint("Im Simulator spielen ${state.simParallelCount(p)} Agenten gleichzeitig – alle sind unten live zu sehen.")
+                }
             }
             if (!state.simulate || p.practiceKind == null) {
-                Hint("Nach dem Start bleiben ${fmt(state.platform.startDelaySec, 0)} s, um zum Spiel zu wechseln. ${p.instances.size} Instanz(en), ${p.tickRate} Entscheidungen/s. Stoppen: ${state.platform.stopHint}")
+                Fields {
+                    IntField("Agenten pro Generation", p.evolution.population, { v -> state.update { it.copy(evolution = it.evolution.copy(population = v)) } }, Modifier.width(200.dp), 2, 1000)
+                }
+                Hint(
+                    "Gleichzeitig spielen ${p.instances.size} Agent(en) – einer pro Spielbereich" +
+                        (if (p.browser != null) " bzw. Chrome-Fenster (Anzahl im Tab „Bereiche“)." else " (mehr Bereiche im Tab „Bereiche“).") +
+                        " ${p.tickRate} Entscheidungen/s. Nach dem Start bleiben ${fmt(state.platform.startDelaySec, 0)} s. Stoppen: ${state.platform.stopHint}",
+                )
             }
         }
         if (status.message.isNotBlank()) Hint(status.message, MaterialTheme.colorScheme.tertiary)
@@ -127,11 +141,12 @@ fun TrainingTab(state: AppState) {
                     "${s.phase} · ${fmt(s.seconds, 1)} s · Belohnung ${fmt(s.reward, 2)}",
                 )
             }
-            val preview = state.simPreview
-            if (state.simulate && preview != null) {
-                val img = remember(preview) { state.platform.frameToImage(preview) }
-                Image(img, "Simulator", Modifier.height(260.dp).width(165.dp), contentScale = ContentScale.FillBounds, filterQuality = FilterQuality.None)
-            }
+        }
+        if (status.mode == RunMode.TRAINING && status.agents.isNotEmpty()) {
+            Section("Agenten dieser Generation") { AgentOverview(status) }
+        }
+        if (state.simulate && p.practiceKind != null && state.simFrames.isNotEmpty()) {
+            Section("Simulator – alle gleichzeitig spielenden Agenten") { SimulatorGrid(state, state.simFrames, status) }
         }
     }
 

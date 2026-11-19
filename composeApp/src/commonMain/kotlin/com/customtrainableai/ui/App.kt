@@ -156,6 +156,13 @@ fun ProfileListScreen(state: AppState) {
             }
         }
 
+        if (state.platform.browser != null) {
+            Section("Browser-Spiel: Neon Flap (Chrome)") {
+                Hint("Fertige Vorlage für Neon Flap auf addict-games.netlify.app: öffnet mehrere Chrome-Fenster, stellt kleinste Lücke, höchste Geschwindigkeit und 1 \$ Einsatz ein, zählt die Tore direkt aus der Seite und erkennt den Crash.")
+                Button(onClick = { state.newNeonFlap() }) { Text("Vorlage: Neon Flap (Chrome)") }
+            }
+        }
+
         Section("Backups") {
             Hint("Während ein Profil offen ist, wird alle 2 Minuten automatisch ein Backup geschrieben: „{Dateiname}backup{TT.MM.JJJJ}_{HH.MM}.json“. Pro Profil gibt es genau ein Backup, das jedes Mal ersetzt wird.")
             if (backups.isEmpty()) Hint("Keine Backups vorhanden.")

@@ -32,6 +32,8 @@ interface U32 : StdCallLibrary {
     fun GetWindowThreadProcessId(hWnd: HWND, pid: IntByReference?): Int
     fun IsWindow(hWnd: HWND): Boolean
     fun GetForegroundWindow(): HWND?
+    fun EnumChildWindows(parent: HWND, cb: WNDENUMPROC, data: Pointer?): Boolean
+    fun GetWindowRect(hWnd: HWND, rect: RECT): Boolean
 
     companion object {
         val INSTANCE: U32? by lazy {

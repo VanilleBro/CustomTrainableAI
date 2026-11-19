@@ -50,6 +50,7 @@ enum class KeyLayout(val label: String) { WASD("W A S D"), ARROWS("Pfeiltasten")
 enum class InputMethod(val label: String) {
     REAL("Echte Maus/Tastatur"),
     BACKGROUND("Hintergrund (Fenster-Nachrichten)"),
+    CHROME("Chrome (direkt an den Tab, im Hintergrund)"),
 }
 
 val DEFAULT_CLICK_POINTS = listOf(
@@ -135,6 +136,7 @@ enum class RuleType(val label: String) {
     COLOR_AMOUNT("Farbanteil im Bereich (z.B. Lebensbalken)"),
     OBJECT_TRACK("Objekt verfolgen (Farbe)"),
     ACTION_COST("Kosten pro Aktion"),
+    BROWSER_JS("Browser-Wert (JavaScript, nur Chrome)"),
 }
 
 @Serializable
@@ -154,6 +156,7 @@ enum class Measure(val label: String) { CHANGE("Änderung (pro 10 %)"), LEVEL("M
 enum class TrackGoal(val label: String) {
     RIGHT("nach rechts"), LEFT("nach links"), UP("nach oben"), DOWN("nach unten"),
     TARGET("zum Zielpunkt"), ZONE("in die Zone"),
+    FOLLOW_Y("Höhe eines 2. Objekts halten (z.B. Lücke)"),
 }
 
 @Serializable
@@ -179,6 +182,10 @@ data class RewardRule(
     val onlyNewBest: Boolean = true,
     val minPixels: Int = 3,
     val delaySec: Float = 0f,
+    /** BROWSER_JS: JavaScript-Ausdruck, der eine Zahl liefert (z.B. Punktestand oder 1 = Game Over). */
+    val script: String = "",
+    /** OBJECT_TRACK / FOLLOW_Y: Farbe des Ziel-Objekts (z.B. Kanten der Lücke), gesucht in [zone]. */
+    val color2: String = "#22D3EE",
 ) {
     val displayName get() = name.ifBlank { type.label }
     val usesColor get() = type == RuleType.PIXEL_COLOR || type == RuleType.COLOR_AMOUNT || type == RuleType.OBJECT_TRACK
@@ -201,6 +208,8 @@ data class EpisodeConfig(
     val startDelaySec: Float = 0.5f,
     val resetSteps: List<ResetStep> = emptyList(),
     val resetOnTimeLimit: Boolean = false,
+    /** Vor der allerersten Runde die Neustart-Schritte ausführen (z.B. Spiel per Leertaste starten). */
+    val resetAtStart: Boolean = false,
 )
 
 @Serializable
@@ -249,7 +258,24 @@ data class Profile(
     val launchCommand: String = "",
     val launchCount: Int = 2,
     val practiceKind: PracticeKind? = null,
+    /** Browser-Spiel (Chrome): Adresse, Anzahl Fenster, Element mit dem Spielfeld. */
+    val browser: BrowserConfig? = null,
+    /** Simulator: wie viele Agenten gleichzeitig spielen (0 = alle der Generation). */
+    val simParallel: Int = 0,
     val brain: Brain? = null,
+)
+
+/** Bereiche ab dieser x-Koordinate sind "virtuell": Bild und Eingabe laufen direkt über Chrome (Instanz i = Fenster i). */
+const val VIRTUAL_AREA_X = 1_000_000
+
+@Serializable
+data class BrowserConfig(
+    val url: String = "",
+    val windows: Int = 4,
+    /** CSS-Selektor des Spielfelds, z.B. "canvas". */
+    val selector: String = "canvas",
+    /** JavaScript, das in jedem Fenster die Spiel-Einstellungen setzt (optional). Liefert es "reload", wird neu geladen und erneut ausgeführt. */
+    val setupScript: String = "",
 )
 
 fun parseColor(hex: String): Int {

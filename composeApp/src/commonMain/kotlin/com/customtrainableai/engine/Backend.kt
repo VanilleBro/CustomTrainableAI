@@ -77,3 +77,9 @@ class VirtualClock : Clock {
         if (++calls % 50 == 0) yield()
     }
 }
+
+/** Liest Werte direkt aus dem Spiel (z.B. per JavaScript aus einem Browser-Tab). Nur für Regeln vom Typ BROWSER_JS. */
+interface ValueProbe {
+    /** Wertet die Ausdrücke im Spiel des Bereichs aus. Leere Ausdrücke -> NaN. null = Spiel nicht erreichbar. */
+    suspend fun values(area: com.customtrainableai.model.ScreenRect, scripts: List<String>): DoubleArray?
+}

@@ -151,6 +151,26 @@ fun AreasTab(state: AppState) {
         }
     }
 
+    if (state.platform.browser != null) {
+        Section("Browser-Spiel (Chrome)") {
+            Hint("Öffnet ein eigenes, ferngesteuertes Chrome (eigenes Profil) mit mehreren Fenstern nebeneinander. Jedes Fenster ist eine Instanz – so viele Agenten spielen gleichzeitig. Klicks und Tasten gehen direkt an den jeweiligen Tab, deine Maus und Tastatur bleiben frei. Die KI sieht den Bildschirm: Fenster nicht verdecken oder minimieren.")
+            val b = p.browser ?: com.customtrainableai.model.BrowserConfig()
+            fun setB(nb: com.customtrainableai.model.BrowserConfig) = state.update { it.copy(browser = nb) }
+            Fields {
+                TextField("Adresse des Spiels", b.url, { setB(b.copy(url = it)) }, Modifier.fillMaxWidth())
+                IntField("Fenster (= Agenten gleichzeitig)", b.windows, { setB(b.copy(windows = it)) }, Modifier.width(230.dp), 1, 12)
+                TextField("Spielfeld (CSS-Selektor)", b.selector, { setB(b.copy(selector = it)) }, Modifier.width(240.dp))
+            }
+            ButtonRow {
+                Button(onClick = { if (p.browser == null) setB(b); state.browserOpen() }, enabled = !state.browserBusy && b.url.isNotBlank()) { Text("Chrome-Fenster öffnen") }
+                OutlinedButton(onClick = { state.browserSetup() }, enabled = !state.browserBusy && b.setupScript.isNotBlank()) { Text("Spiel-Einstellungen setzen") }
+                OutlinedButton(onClick = { if (p.browser == null) setB(b); state.browserAdopt() }, enabled = !state.browserBusy) { Text("Bereiche aus Chrome übernehmen") }
+            }
+            if (state.browserInfo.isNotBlank()) Hint(state.browserInfo, MaterialTheme.colorScheme.tertiary)
+            TextField("Einstellungs-Skript (JavaScript, optional – läuft in jedem Fenster)", b.setupScript, { setB(b.copy(setupScript = it)) }, Modifier.fillMaxWidth())
+        }
+    }
+
     if (state.platform.supportsLaunch) {
         Section("Spiel-Instanzen starten (Windows)") {
             Hint("Befehl, der das Spiel startet, z.B. „start \"\" \"C:\\Spiele\\MeinSpiel.exe\"“ oder „start chrome --new-window https://beispiel.de/spiel“. Danach die Fenster nebeneinander legen und „An Fenster anpassen…“ benutzen.")
@@ -398,6 +418,12 @@ private fun RuleCard(state: AppState, i: Int, r: RewardRule) {
                         FloatField("Ende bei Abstand ≤", r.threshold, { set(r.copy(threshold = it)) }, min = 0f, max = 2f)
                         LabeledSwitch("Ziel erreicht beendet die Runde", r.endsEpisode, { set(r.copy(endsEpisode = it)) })
                     }
+                    com.customtrainableai.model.TrackGoal.FOLLOW_Y -> {
+                        Text("Suchbereich des 2. Objekts (z.B. vor der Figur)", fontSize = 13.sp)
+                        RectRow(r.zone) { set(r.copy(zone = it)) }
+                        Fields { TextField("Farbe 2. Objekt (#RRGGBB)", r.color2, { set(r.copy(color2 = it)) }, Modifier.width(200.dp)) }
+                        Hint("Belohnung pro Sekunde, je näher die Figur auf der Höhe des nächsten Objekts der 2. Farbe ist (voll bei gleicher Höhe, 0 ab 30 % Abstand). Ideal für Flappy-Spiele: Farbe der Lücken-Kanten.")
+                    }
                     com.customtrainableai.model.TrackGoal.ZONE -> {
                         Text("Zone", fontSize = 13.sp)
                         RectRow(r.zone) { set(r.copy(zone = it)) }
@@ -406,9 +432,25 @@ private fun RuleCard(state: AppState, i: Int, r: RewardRule) {
                     }
                     else -> {}
                 }
-                if (r.goal != com.customtrainableai.model.TrackGoal.ZONE) {
+                if (r.goal != com.customtrainableai.model.TrackGoal.ZONE && r.goal != com.customtrainableai.model.TrackGoal.FOLLOW_Y) {
                     LabeledSwitch("Nur neue Rekorde belohnen (kein Hin-und-Her-Farmen)", r.onlyNewBest, { set(r.copy(onlyNewBest = it)) })
                 }
+            }
+            RuleType.BROWSER_JS -> {
+                TextField("JavaScript-Ausdruck (liefert eine Zahl)", r.script, { set(r.copy(script = it)) }, Modifier.fillMaxWidth())
+                LabeledSwitch("Beendet die Runde, wenn der Wert ≠ 0 ist (z.B. Game Over)", r.endsEpisode, { set(r.copy(endsEpisode = it)) })
+                if (!r.endsEpisode) {
+                    LabeledSwitch("Pro Sekunde × Wert (statt pro Zunahme)", r.measure == com.customtrainableai.model.Measure.LEVEL, {
+                        set(r.copy(measure = if (it) com.customtrainableai.model.Measure.LEVEL else com.customtrainableai.model.Measure.CHANGE))
+                    })
+                }
+                Hint(
+                    when {
+                        r.endsEpisode -> "Wert ≠ 0 (oder true) = Runde vorbei, dann gibt es die Belohnung (meist negativ)."
+                        r.measure == com.customtrainableai.model.Measure.LEVEL -> "Jede Sekunde Belohnung × Wert – z.B. 1, solange das Spiel läuft."
+                        else -> "Steigt der Wert (z.B. Punktestand), gibt es Belohnung × Zunahme. Wird im Chrome-Tab des Spiels ausgewertet."
+                    },
+                )
             }
         }
         ButtonRow {

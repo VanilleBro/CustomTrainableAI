@@ -108,6 +108,94 @@ object Templates {
         ),
     )
 
+    const val NEON_FLAP_URL = "https://addict-games.netlify.app/#/flap"
+
+    /** Setzt in Neon Flap: kleinste Lücke, höchste Geschwindigkeit, $1 Einsatz. */
+    val NEON_FLAP_SETUP = """
+(()=>{
+  const nameBox=[...document.querySelectorAll('input')].find(e=>e.offsetParent&&!['range','number','checkbox','radio','hidden'].includes(e.type)&&!e.closest('.arcade-box'));
+  let acc={};try{acc=JSON.parse(localStorage.getItem('addictgames_v1')||'{}')}catch(e){}
+  if(nameBox&&acc.name){location.reload();return 'reload'}
+  if(nameBox)return 'Bitte im Fenster einmal einen Namen eingeben';
+  const setV=(el,v)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,String(v));el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))};
+  const r=[...document.querySelectorAll('input[type=range]')];
+  if(r[0])setV(r[0],r[0].max);
+  if(r[1])setV(r[1],r[1].max);
+  const n=document.querySelector('input[type=number]');
+  if(n)setV(n,1);
+  const box=document.querySelector('.arcade-box');if(box)box.scrollIntoView({block:'center'});
+  return 'Lücke '+(r[0]&&r[0].value)+'/5, Tempo '+(r[1]&&r[1].value)+'/3, Einsatz $'+(n&&n.value);
+})()
+""".trim()
+
+    /** Neon Flap (addict-games.netlify.app) in Chrome: Flappy-artig, Klick = fliegen, Tore und Crash direkt aus der Seite. */
+    fun neonFlap() = Profile(
+        name = "Neon Flap (Chrome)",
+        instances = listOf(ScreenRect(0, 0, 400, 600)),
+        inputMethod = InputMethod.CHROME,
+        actions = ActionConfig(
+            mode = ActionMode.CLICK_1,
+            clickPoints = listOf(RelPoint(0.5f, 0.3f)) + DEFAULT_CLICK_POINTS.drop(1),
+        ),
+        tickRate = 20,
+        network = NetworkConfig(hidden = listOf(16), gridW = 8, gridH = 12, motion = true),
+        evolution = EvolutionConfig(population = 24, generationsPerRun = 0, experiment = 0.35f),
+        rewards = RewardSetup(
+            rules = listOf(
+                RewardRule(
+                    type = RuleType.BROWSER_JS,
+                    name = "Überleben (nur solange geflogen wird)",
+                    reward = 0.5f,
+                    measure = Measure.LEVEL,
+                    script = "(()=>{const o=document.querySelector('.arcade-overlay');return o&&o.offsetParent?0:1})()",
+                ),
+                RewardRule(
+                    type = RuleType.OBJECT_TRACK,
+                    name = "Schiff auf Höhe der nächsten Lücke (türkise Kanten)",
+                    reward = 2f,
+                    color = "#D6C8FD",
+                    tolerance = 45,
+                    region = RelRect(0.19f, 0.06f, 0.16f, 0.94f),
+                    goal = TrackGoal.FOLLOW_Y,
+                    color2 = "#22D3EE",
+                    zone = RelRect(0.2f, 0.06f, 0.6f, 0.94f),
+                    target = RelPoint(0.25f, 0.5f),
+                    minPixels = 3,
+                    onlyNewBest = false,
+                ),
+                RewardRule(
+                    type = RuleType.BROWSER_JS,
+                    name = "Tor geschafft (Zähler oben links)",
+                    reward = 3f,
+                    script = "parseInt(document.querySelector('.arcade-hud .h-l').textContent)||0",
+                ),
+                RewardRule(
+                    type = RuleType.BROWSER_JS,
+                    name = "Crash = Game Over",
+                    reward = -5f,
+                    endsEpisode = true,
+                    script = "(()=>{const o=document.querySelector('.arcade-overlay');return !!(o&&o.offsetParent&&/Crash/.test(o.textContent))})()",
+                ),
+                RewardRule(
+                    type = RuleType.BROWSER_JS,
+                    name = "Spiel läuft seit 2 s nicht (hängt) = Runde vorbei",
+                    reward = -5f,
+                    endsEpisode = true,
+                    delaySec = 0.5f,
+                    script = "(()=>{const o=document.querySelector('.arcade-overlay');const run=!(o&&o.offsetParent);const t=performance.now();if(run||!window.__ctaiRun)window.__ctaiRun=t;return !run&&t-window.__ctaiRun>2000})()",
+                ),
+            ),
+            episode = EpisodeConfig(
+                maxSeconds = 90f,
+                // Kurz halten: das erste Tor kommt nach ~1 s, die KI soll möglichst früh steuern
+                startDelaySec = 0.05f,
+                resetSteps = listOf(ResetStep(StepType.KEY, key = "SPACE"), ResetStep(StepType.WAIT, seconds = 0.05f)),
+                resetAtStart = true,
+            ),
+        ),
+        browser = BrowserConfig(url = NEON_FLAP_URL, windows = 12, selector = ".arcade-box canvas", setupScript = NEON_FLAP_SETUP),
+    )
+
     /** Die Vorlage an mehrere Bereiche anpassen. */
     fun Profile.withAreas(areas: List<ScreenRect>) = if (areas.isEmpty()) this else copy(instances = areas)
 }

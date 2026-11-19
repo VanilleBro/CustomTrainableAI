@@ -345,6 +345,9 @@ class PracticeSim(
     var lastFrame: Frame? = null
         private set
 
+    /** Letztes Bild jeder Instanz (für die Agenten-Ansicht im Simulator). */
+    val frames: Array<Frame?> = arrayOfNulls(areas.size)
+
     private fun advance(i: Int) {
         val now = clock.now()
         while (gameTime[i] < now) {
@@ -360,7 +363,10 @@ class PracticeSim(
             val i = this.areas.indices.firstOrNull { !used[it] && this.areas[it].normalized() == a } ?: return@map null
             used[i] = true
             advance(i)
-            Frame(resW, resH, PracticeRenderer.render(games[i], resW, resH), a.w.toFloat() / resW).also { if (i == 0) lastFrame = it }
+            Frame(resW, resH, PracticeRenderer.render(games[i], resW, resH), a.w.toFloat() / resW).also {
+                frames[i] = it
+                if (i == 0) lastFrame = it
+            }
         }
     }
 

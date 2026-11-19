@@ -94,6 +94,7 @@ suspend fun runTour(state: AppState, platform: DesktopPlatform, dir: File) {
         ImageIO.write(robot.createScreenCapture(Rectangle(r)), "png", File(dir, "$name.png"))
     }
     delay(2500)
+    platform.mainWindow?.isAlwaysOnTop = true
     platform.mainWindow?.toFront()
     shot("01-start")
     platform.openPracticeGame(PracticeKind.CATCH)
@@ -111,6 +112,13 @@ suspend fun runTour(state: AppState, platform: DesktopPlatform, dir: File) {
     state.start(RunMode.TRAINING)
     delay(1500)
     shot("03-sim-running")
+    platform.mainWindow?.bounds?.let { b ->
+        robot.mouseMove(b.x + b.width / 2, b.y + b.height / 2)
+        robot.mouseWheel(12)
+    }
+    shot("03b-sim-agents")
+    robot.mouseWheel(12)
+    shot("03c-sim-grid")
     var waited = 0
     while (state.isRunning && waited < 120) { delay(1000); waited++ }
     shot("04-sim-done")
@@ -178,6 +186,10 @@ fun runSmokeTest(out: File): Boolean {
     check("Win32/JNA") {
         if (U32.INSTANCE == null) error("user32 nicht geladen")
         "geladen, Fenster unter (10,10) gefunden: ${WindowGuard().rootAt(com.customtrainableai.model.ScreenPoint(10, 10)) != null}"
+    }
+    check("Chrome-Anbindung (HTTP/WebSocket)") {
+        java.net.http.HttpClient.newHttpClient()
+        "ok, Chrome: " + (ChromeBridge(java.io.File(System.getProperty("java.io.tmpdir"))).chromePath() ?: "nicht gefunden")
     }
     check("Bildschirmaufnahme") { Robot().createScreenCapture(Rectangle(0, 0, 4, 4)).let { "${it.width}x${it.height}, Skalierung ${screenScale()}" } }
     check("Profil-JSON") {
@@ -282,4 +294,81 @@ private suspend fun inputDiag(area: com.customtrainableai.model.ScreenRect, out:
     trial("Send an Kind (links)", child, true, ptL)
     trial("Send an Hauptfenster (rechts)", root, true, pt)
     trial("Send an Hauptfenster (links)", root, true, ptL)
+}
+
+/**
+ * Live-Test mit Chrome (Neon Flap):  --chrometest [Fenster] [Generationen] [Logdatei]
+ * Öffnet Chrome-Fenster, setzt die Spiel-Einstellungen, übernimmt die Spielfelder und trainiert.
+ */
+suspend fun runChromeTest(platform: DesktopPlatform, args: List<String>) {
+    val windows = args.getOrNull(0)?.toIntOrNull() ?: 4
+    val gens = args.getOrNull(1)?.toIntOrNull() ?: 10
+    val log = File(args.getOrNull(2) ?: "chrometest-log.txt")
+    log.parentFile?.mkdirs()
+    log.writeText("")
+    fun out(s: String) { println(s); log.appendText(s + "\n") }
+    val base = Templates.neonFlap()
+    val cfg = base.browser!!
+    val chrome = platform.chrome
+    out("Chrome: ${chrome.chromePath()}")
+    chrome.open(cfg.url, windows)?.let { out("FEHLER open: $it"); return }
+    out("Fenster verbunden: ${chrome.connected()}")
+    delay(4000)
+    // Einstellungen setzen; solange der Name fehlt, warten (der Name wird einmal von Hand eingegeben)
+    var ok = false
+    for (attempt in 0 until 60) {
+        var res = chrome.runAll(cfg.setupScript)
+        if (res.any { it.contains("reload") }) { delay(3500); res = chrome.runAll(cfg.setupScript) }
+        out("Einstellungen: $res")
+        if (res.all { it.contains("Lücke") }) { ok = true; break }
+        delay(3000)
+    }
+    if (!ok) { out("FEHLER: Einstellungen nicht gesetzt"); return }
+    delay(500)
+    val areas = chrome.areas(cfg.selector)
+    out("Bereiche: $areas")
+    if (areas.isEmpty()) return
+    platform.capturer.capture(areas).forEachIndexed { i, f ->
+        f?.let { ImageIO.write(it.toBufferedImage(), "png", File(log.parentFile ?: File("."), "chrome-instanz${i + 1}.png")) }
+    }
+    val scripts = base.rewards.rules.map { it.script }
+    out("JS-Werte vor Start: ${areas.map { chrome.values(it, scripts)?.toList() }}")
+    // Eingabe-Test: Leertaste startet das Spiel
+    val tab = chrome.tabFor(areas[0])
+    out("Tab für Instanz 1 gefunden: ${tab != null}, cssScale=${tab?.cssScale}, viewport=${tab?.viewport}")
+
+    val profile = base.copy(
+        instances = areas,
+        evolution = base.evolution.copy(generationsPerRun = gens),
+    )
+    platform.beforeRun(profile)?.let { out("FEHLER beforeRun: $it"); return }
+    val engine = Engine(platform.capturer, platform.input, RealClock, touchOnly = false, probe = chrome)
+    val start = System.currentTimeMillis()
+    coroutineScope {
+        val monitor = launch {
+            while (true) {
+                delay(10_000)
+                val s = engine.status.value
+                val good = s.agents.count { it.state == 2 && it.score > 0 }
+                val done = s.agents.count { it.state == 2 }
+                out("  … ${(System.currentTimeMillis() - start) / 1000}s: Gen ${s.generation + 1}, ${s.evaluated}/${s.total}, ${fmt(s.ticksPerSecond, 1)} Takte/s, gut $good/$done, " +
+                    s.instances.joinToString { "${it.phase}(${fmt(it.reward, 1)})" } + (if (s.message.isNotBlank()) "  [${s.message}]" else "") +
+                    (platform.input.warning?.let { "  !$it" } ?: ""))
+            }
+        }
+        withContext(Dispatchers.Default) {
+            // Trainingsstand als Profil speichern -> in der App weitertrainieren / abspielen
+            val store = com.customtrainableai.engine.ProfileStore(platform.storage) { platform.timestamp() }
+            val saved = store.listProfiles().firstOrNull { it == profile.name }?.let { runCatching { store.load(it) }.getOrNull() }
+            val run = if (saved?.brain != null && args.getOrNull(3) == "weiter") profile.copy(brain = saved.brain) else profile
+            engine.run(run, RunMode.TRAINING, startDelaySec = 1.0) { b ->
+                val h = b.history.last()
+                out("Generation ${h.gen}: bester=${fmt(h.best)} Ø=${fmt(h.avg)} min=${fmt(h.min)}  (${(System.currentTimeMillis() - start) / 1000}s)")
+                runCatching { store.save(profile.name, profile.copy(brain = b)) }
+                if (h.gen % 5 == 0) out("  Spielgeld: " + chrome.runAll("JSON.parse(localStorage.getItem('addictgames_v1')).cash").firstOrNull())
+            }
+        }
+        monitor.cancel()
+    }
+    out("Fertig nach ${(System.currentTimeMillis() - start) / 1000}s. ${engine.status.value.message}")
 }

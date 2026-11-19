@@ -75,7 +75,8 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          # Android bleibt vorerst bei v1.0.1 – Releases enthalten nur die Windows-Version
           files: |
-            dist/CustomTrainableAI-Android.apk
             dist/CustomTrainableAI-Windows.zip
           generate_release_notes: true
+          body: "Windows-Version. Die Android-APK bleibt vorerst bei v1.0.1."

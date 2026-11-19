@@ -9,7 +9,7 @@ plugins {
     id("com.android.application")
 }
 
-val appVersion = "1.0.0"
+val appVersion = "1.1.0"
 
 kotlin {
     androidTarget {
@@ -97,7 +97,7 @@ compose.desktop {
             packageName = "CustomTrainableAI"
             packageVersion = appVersion
             description = "Selbstlernende KI fuer Spiele"
-            modules("java.instrument", "java.management", "jdk.unsupported", "java.naming", "java.sql")
+            modules("java.instrument", "java.management", "jdk.unsupported", "java.naming", "java.sql", "java.net.http")
             windows {
                 menuGroup = "CustomTrainableAI"
                 shortcut = true

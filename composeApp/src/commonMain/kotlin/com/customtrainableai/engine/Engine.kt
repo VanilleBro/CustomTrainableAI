@@ -16,6 +16,8 @@ import com.customtrainableai.model.StepType
 import com.customtrainableai.model.decodeWeights
 import com.customtrainableai.model.encodeWeights
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +31,17 @@ import kotlin.random.Random
 enum class RunMode { IDLE, TRAINING, PLAYBACK }
 
 data class InstanceStatus(val index: Int, val phase: String, val agent: Int, val reward: Float, val seconds: Float)
+
+/** Zustand eines Agenten der aktuellen Generation (für die Agenten-Übersicht). */
+data class AgentStatus(
+    val index: Int,
+    /** 0 = wartet, 1 = spielt gerade, 2 = fertig bewertet */
+    val state: Int,
+    /** Durchschnittliche Belohnung dieser Generation (fertig) bzw. laufende Belohnung (spielt). */
+    val score: Float,
+    /** Instanz, auf der er gerade spielt (-1 = keine). */
+    val instance: Int = -1,
+)
 
 data class EngineStatus(
     val mode: RunMode = RunMode.IDLE,
@@ -44,6 +57,10 @@ data class EngineStatus(
     val ticksPerSecond: Float = 0f,
     val countdown: Int = 0,
     val message: String = "",
+    /** Alle Agenten der laufenden Generation. */
+    val agents: List<AgentStatus> = emptyList(),
+    /** Ergebnisse der zuletzt fertigen Generation (pro Agent). */
+    val lastGenScores: List<Float> = emptyList(),
 ) {
     val running get() = mode != RunMode.IDLE
 }
@@ -61,6 +78,8 @@ class Engine(
     private val random: Random = Random.Default,
     /** Wie oft der Status nach außen gemeldet wird (in Engine-Sekunden). */
     private val statusInterval: Double = 0.2,
+    /** Liest Spielwerte für Browser-Regeln (BROWSER_JS); null = nicht verfügbar. */
+    private val probe: ValueProbe? = null,
 ) {
     private val _status = MutableStateFlow(EngineStatus())
     val status: StateFlow<EngineStatus> = _status
@@ -148,7 +167,10 @@ class Engine(
         val eps = if (mode == RunMode.TRAINING) evo.randomActionChance else 0f
 
         val slots = profile.instances.ifEmpty { listOf(ScreenRect()) }.mapIndexed { i, r ->
-            Slot(i, r.normalized(), RewardTracker(rules), space.heads.size, observer.gridSize, observer.inputSize)
+            Slot(i, r.normalized(), RewardTracker(rules), space.heads.size, observer.gridSize, observer.inputSize).also {
+                // Vor der ersten Runde einmal die Neustart-Schritte ausführen (Spiel sicher starten)
+                it.needsReset = ep.resetAtStart && ep.resetSteps.isNotEmpty()
+            }
         }
 
         // Countdown, damit man noch zum Spiel wechseln kann
@@ -180,6 +202,7 @@ class Engine(
         val target = if (mode == RunMode.TRAINING) evo.generationsPerRun.coerceAtLeast(0) else 0
         var lastStatus = -1e9
         var stuckMsg: String? = null
+        var lastGenScores: List<Float> = emptyList()
         var tickCount = 0
         var tpsStart = clock.now()
         var tps = 0f
@@ -212,6 +235,18 @@ class Engine(
             val frames = if (needFrames.isEmpty()) emptyList() else capturer.capture(needFrames.map { it.area })
             val frameOf = HashMap<Int, Frame?>()
             needFrames.forEachIndexed { k, s -> frameOf[s.index] = frames.getOrNull(k) }
+            // Browser-Werte (Punktestand, Game Over …) direkt aus dem Spiel lesen
+            if (probe != null && slots.first().tracker.usesJs && needFrames.isNotEmpty()) {
+                val scripts = slots.first().tracker.jsScripts
+                val p = probe!!
+                val results = kotlinx.coroutines.coroutineScope {
+                    needFrames.map { s -> async { runCatching { p.values(s.area, scripts) }.getOrNull() } }.awaitAll()
+                }
+                needFrames.forEachIndexed { k, s ->
+                    val v = results[k]
+                    if (v == null) s.tracker.jsValues.fill(Double.NaN) else v.copyInto(s.tracker.jsValues, 0, 0, minOf(v.size, s.tracker.jsValues.size))
+                }
+            }
             var pauseMsg: String? = null
             if (needFrames.isNotEmpty() && frames.all { it == null }) pauseMsg = "Kein Bild – Spiel nicht sichtbar/verdeckt oder Bildschirmaufnahme nicht aktiv. Pausiert."
 
@@ -328,6 +363,7 @@ class Engine(
             // 5) Generation fertig?
             if (mode == RunMode.TRAINING && queue.isEmpty() && slots.all { it.phase == Phase.IDLE }) {
                 val scores = (0 until popSize).filter { genCounts[it] > 0 }.map { genScores[it] / genCounts[it] }
+                lastGenScores = (0 until popSize).map { if (genCounts[it] > 0) (genScores[it] / genCounts[it]).toFloat() else Float.NaN }
                 if (scores.isNotEmpty()) {
                     generation++
                     runGens++
@@ -390,6 +426,15 @@ class Engine(
                     bestFitness = bestFitness,
                     ticksPerSecond = tps,
                     message = pauseMsg ?: stuckMsg ?: message,
+                    agents = if (mode != RunMode.TRAINING) emptyList() else (0 until popSize).map { a ->
+                        val slot = slots.firstOrNull { it.agent == a && it.phase != Phase.IDLE }
+                        when {
+                            slot != null -> AgentStatus(a, 1, slot.reward.toFloat(), slot.index)
+                            genCounts[a] >= episodesPerAgent -> AgentStatus(a, 2, (genScores[a] / genCounts[a]).toFloat())
+                            else -> AgentStatus(a, 0, 0f)
+                        }
+                    },
+                    lastGenScores = lastGenScores,
                 )
             }
 

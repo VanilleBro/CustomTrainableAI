@@ -1,5 +1,6 @@
 package com.customtrainableai.desktop
 
+import com.customtrainableai.model.InputMethod
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -57,8 +58,12 @@ class DesktopPlatform(baseDir: File = File(System.getProperty("user.home"), "Cus
     override val storage = FileStorage(baseDir)
     /** Klickt/bewertet nur, solange das Spielfenster im Bereich liegt. */
     val guard = WindowGuard()
-    override val capturer = DesktopCapturer(guard)
-    override val input = DesktopInput(guard) { root -> practiceWindows.toList().firstOrNull { it.hwnd == root } }
+    /** Chrome-Anbindung für Browser-Spiele. */
+    val chrome = ChromeBridge(baseDir)
+    override val capturer = DesktopCapturer(guard) { area -> chrome.frameFor(area) }
+    override val input = DesktopInput(guard, { root -> practiceWindows.toList().firstOrNull { it.hwnd == root } }, chrome)
+    override val probe: com.customtrainableai.engine.ValueProbe = chrome
+    override val browser: com.customtrainableai.engine.BrowserControl = chrome
     override var onStopRequest: (() -> Unit)? = null
 
     var mainWindow: ComposeWindow? = null
@@ -131,8 +136,17 @@ class DesktopPlatform(baseDir: File = File(System.getProperty("user.home"), "Cus
         input.tapMs = profile.actions.tapMs
         input.warning = null
         guard.reset()
+        val usesJs = profile.rewards.rules.any { it.enabled && it.type == com.customtrainableai.model.RuleType.BROWSER_JS }
+        val virtual = profile.instances.any { it.x >= ChromeBridge.VIRTUAL_X }
+        if ((profile.inputMethod == InputMethod.CHROME || usesJs || virtual) && chrome.connected() == 0) {
+            return "Keine Chrome-Fenster verbunden. Im Tab „Bereiche“ zuerst „Chrome-Fenster öffnen“."
+        }
+        if (virtual && profile.instances.any { chrome.tabFor(it) == null }) {
+            return "Es sind weniger Chrome-Fenster offen als Instanzen. „Chrome-Fenster öffnen“ bzw. „Bereiche aus Chrome übernehmen“."
+        }
+        profile.browser?.let { chrome.useSelector(it.selector) }
         val b = primaryScreenBounds()
-        profile.instances.forEachIndexed { i, r ->
+        profile.instances.filter { it.x < ChromeBridge.VIRTUAL_X }.forEachIndexed { i, r ->
             if (r.right <= b.x || r.bottom <= b.y || r.x >= b.x + b.width || r.y >= b.y + b.height) {
                 return "Instanz ${i + 1} liegt außerhalb des Bildschirms – bitte im Editor festlegen."
             }

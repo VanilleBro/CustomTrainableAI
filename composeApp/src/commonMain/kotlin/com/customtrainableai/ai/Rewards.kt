@@ -28,6 +28,7 @@ class RewardTracker(private val rules: List<RewardRule>) {
     }
 
     private val colors = rules.map { parseColor(it.color) }
+    private val colors2 = rules.map { parseColor(it.color2) }
     private val states = rules.map { State() }
 
     var ended = false
@@ -37,6 +38,11 @@ class RewardTracker(private val rules: List<RewardRule>) {
 
     /** Letzte Belohnung pro Regel (für die Anzeige). */
     val lastRewards = DoubleArray(rules.size)
+
+    /** Werte der Browser-Regeln (BROWSER_JS) für diesen Schritt, gleiche Reihenfolge wie die Regeln; NaN = unbekannt. */
+    val jsValues = DoubleArray(rules.size) { Double.NaN }
+    val usesJs get() = rules.any { it.type == RuleType.BROWSER_JS }
+    val jsScripts get() = rules.map { if (it.type == RuleType.BROWSER_JS) it.script else "" }
 
     fun reset() {
         for (s in states) {
@@ -95,7 +101,27 @@ class RewardTracker(private val rules: List<RewardRule>) {
                     s.prevAmount = amount
                     r
                 }
-                RuleType.OBJECT_TRACK -> if (active) track(f, rule, colors[i], s, dt) else 0.0
+                RuleType.OBJECT_TRACK -> if (active) track(f, rule, colors[i], s, dt, colors2[i]) else 0.0
+                RuleType.BROWSER_JS -> {
+                    val v = jsValues[i]
+                    if (v.isNaN()) {
+                        0.0
+                    } else if (rule.endsEpisode) {
+                        if (active) timed(rule, s, v != 0.0, dt) else { s.prevTrue = v != 0.0; 0.0 }
+                    } else if (rule.measure == Measure.LEVEL) {
+                        // pro Sekunde × Wert (z.B. 1 solange das Spiel läuft)
+                        if (active) rule.reward * v * dt else 0.0
+                    } else {
+                        // Zahl steigt (z.B. Punktestand): Belohnung pro Zunahme; der erste Wert der Runde ist die Grundlinie
+                        var r = 0.0
+                        if (s.best.isNaN()) s.best = v
+                        else if (v > s.best) {
+                            if (active) r = rule.reward * (v - s.best)
+                            s.best = v
+                        }
+                        r
+                    }
+                }
             }
             lastRewards[i] = r
             total += r
@@ -115,6 +141,7 @@ class RewardTracker(private val rules: List<RewardRule>) {
                     if (if (rule.condition == Condition.MATCH) match else !match) return true
                 }
                 RuleType.COLOR_AMOUNT -> if (colorAmount(f, rule.region, colors[i], rule.tolerance) <= rule.threshold) return true
+                RuleType.BROWSER_JS -> if (!jsValues[i].isNaN() && jsValues[i] != 0.0) return true
                 else -> {}
             }
         }
@@ -144,7 +171,7 @@ class RewardTracker(private val rules: List<RewardRule>) {
         return r
     }
 
-    private fun track(f: Frame, rule: RewardRule, color: Int, s: State, dt: Double): Double {
+    private fun track(f: Frame, rule: RewardRule, color: Int, s: State, dt: Double, color2: Int = 0): Double {
         var sx = 0.0
         var sy = 0.0
         var n = 0
@@ -158,6 +185,28 @@ class RewardTracker(private val rules: List<RewardRule>) {
         val cy = (sy / n + 0.5) / f.height
         if (rule.goal == TrackGoal.ZONE) {
             return timed(rule, s, rule.zone.contains(cx.toFloat(), cy.toFloat()), dt)
+        }
+        if (rule.goal == TrackGoal.FOLLOW_Y) {
+            // Ziel = nächstes (am weitesten links liegendes) Objekt der 2. Farbe in der Zone, z.B. die Kanten der nächsten Lücke
+            var minX = Int.MAX_VALUE
+            val xs = ArrayList<Int>(256)
+            val ys = ArrayList<Int>(256)
+            forSamples(f, rule.zone, 4000) { x, y, c ->
+                if (colorDist(c, color2) <= rule.tolerance) {
+                    xs += x; ys += y
+                    if (x < minX) minX = x
+                }
+            }
+            var ty = rule.target.y.toDouble()
+            if (xs.size >= rule.minPixels.coerceAtLeast(1)) {
+                val limit = minX + (f.width * 0.12).toInt().coerceAtLeast(2)
+                var sum = 0.0
+                var n = 0
+                for (k in xs.indices) if (xs[k] <= limit) { sum += ys[k]; n++ }
+                if (n > 0) ty = (sum / n + 0.5) / f.height
+            }
+            val closeness = (1.0 - abs(cy - ty) / 0.3).coerceAtLeast(0.0)
+            return rule.reward * closeness * dt
         }
         val progress = when (rule.goal) {
             TrackGoal.RIGHT -> cx

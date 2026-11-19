@@ -16,6 +16,8 @@ import com.customtrainableai.engine.VirtualClock
 import com.customtrainableai.model.Brain
 import com.customtrainableai.model.PracticeKind
 import com.customtrainableai.model.Profile
+import com.customtrainableai.model.ScreenRect
+import com.customtrainableai.model.VIRTUAL_AREA_X
 import com.customtrainableai.model.Templates
 import com.customtrainableai.model.Templates.withAreas
 import com.customtrainableai.model.fmt
@@ -56,8 +58,10 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
     var simulate by mutableStateOf(false)
     var simRealtime by mutableStateOf(true)
     var simPreview by mutableStateOf<Frame?>(null)
+    /** Bilder aller gleichzeitig spielenden Simulator-Agenten. */
+    var simFrames by mutableStateOf<List<Frame?>>(emptyList())
 
-    val engine = Engine(platform.capturer, platform.input, RealClock, platform.touchOnly)
+    val engine = Engine(platform.capturer, platform.input, RealClock, platform.touchOnly, probe = platform.probe)
     var activeStatus: StateFlow<EngineStatus> by mutableStateOf(engine.status)
         private set
     private var runJob: Job? = null
@@ -92,6 +96,68 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
         val t = if (kind == PracticeKind.CATCH) Templates.practiceCatch() else Templates.practiceJump()
         newProfile(t.withAreas(areas))
         toast = if (areas.isEmpty()) "Tipp: Übungsspiel öffnen und unter „Bereiche“ → „An Übungsspiel anpassen“ tippen." else "Bereiche an ${areas.size} Übungsspiel-Fenster angepasst."
+    }
+
+    /** Vorlage für das Browser-Spiel Neon Flap (Chrome). */
+    fun newNeonFlap() {
+        newProfile(com.customtrainableai.model.Templates.neonFlap())
+        tab = 2
+        toast = "Vorlage angelegt – jetzt „Chrome-Fenster öffnen“."
+    }
+
+    // ---------------- Browser (Chrome) ----------------
+
+    var browserBusy by mutableStateOf(false)
+    var browserInfo by mutableStateOf("")
+
+    private fun browserTask(label: String, block: suspend (com.customtrainableai.engine.BrowserControl) -> String) {
+        val b = platform.browser ?: return
+        if (browserBusy) return
+        browserBusy = true
+        browserInfo = "$label …"
+        scope.launch {
+            val msg = try { block(b) } catch (e: Throwable) { "Fehler: ${e.message}" }
+            browserInfo = msg
+            browserBusy = false
+        }
+    }
+
+    private suspend fun runSetup(b: com.customtrainableai.engine.BrowserControl, script: String): String {
+        var res = b.runAll(script)
+        if (res.any { it.contains("reload") }) {
+            kotlinx.coroutines.delay(3500)
+            res = b.runAll(script)
+        }
+        return res.mapIndexed { i, r -> "Fenster ${i + 1}: ${r.trim('"')}" }.joinToString("\n")
+    }
+
+    private suspend fun adopt(b: com.customtrainableai.engine.BrowserControl, selector: String): String {
+        val areas = b.areas(selector)
+        if (areas.isEmpty()) return "Kein Spielfeld „$selector“ gefunden – ist die Seite geladen?"
+        update { it.copy(instances = areas, inputMethod = com.customtrainableai.model.InputMethod.CHROME) }
+        return "${areas.size} Spielbereich(e) aus Chrome übernommen."
+    }
+
+    /** Öffnet die Chrome-Fenster, setzt die Spiel-Einstellungen und übernimmt die Spielbereiche. */
+    fun browserOpen() {
+        val cfg = profile.browser ?: return
+        browserTask("Chrome wird geöffnet") { b ->
+            b.open(cfg.url, cfg.windows)?.let { return@browserTask it }
+            kotlinx.coroutines.delay(4000)
+            val setup = if (cfg.setupScript.isNotBlank()) runSetup(b, cfg.setupScript) + "\n" else ""
+            kotlinx.coroutines.delay(500)
+            setup + adopt(b, cfg.selector)
+        }
+    }
+
+    fun browserSetup() {
+        val cfg = profile.browser ?: return
+        browserTask("Einstellungen werden gesetzt") { b -> runSetup(b, cfg.setupScript) }
+    }
+
+    fun browserAdopt() {
+        val cfg = profile.browser ?: return
+        browserTask("Spielfelder werden gesucht") { b -> adopt(b, cfg.selector) }
     }
 
     fun open(name: String) = guard("Laden") {
@@ -212,14 +278,36 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
         val eng: Engine
         if (sim) {
             val clock = if (simRealtime) RealClock else VirtualClock()
-            val practice = PracticeSim(p.practiceKind!!, p.instances.map { it.normalized() }, clock, seed = (0..100000).random())
-            eng = Engine(practice, practice, clock, touchOnly = false, statusInterval = if (simRealtime) 0.2 else 2.0)
+            // Im Simulator spielen so viele Agenten gleichzeitig wie eingestellt (0 = alle der Generation)
+            val parallel = simParallelCount(p)
+            val simAreas = List(parallel) { i -> ScreenRect(i * 1000, 0, 400, 640) }
+            val practice = PracticeSim(p.practiceKind!!, simAreas, clock, seed = (0..100000).random())
+            eng = Engine(practice, practice, clock, touchOnly = false, statusInterval = if (simRealtime) 0.2 else 1.0)
+            val simProfile = p.copy(instances = simAreas)
             scope.launch {
                 while (isRunning) {
                     simPreview = practice.lastFrame
-                    delay(100)
+                    simFrames = practice.frames.toList()
+                    delay(if (simRealtime) 100 else 250)
                 }
             }
+            activeStatus = eng.status
+            runMode = mode
+            runJob = scope.launch(Dispatchers.Default) {
+                try {
+                    eng.run(simProfile, mode, 0.0) { brain -> withContext(Dispatchers.Main) { onBrain(brain) } }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    withContext(Dispatchers.Main) { toast = "Fehler im Training: ${e.message}" }
+                } finally {
+                    withContext(NonCancellable + Dispatchers.Main) {
+                        runMode = RunMode.IDLE
+                        eng.status.value.message.takeIf { it.isNotBlank() }?.let { toast = it }
+                    }
+                }
+            }
+            return
         } else {
             platform.beforeRun(p)?.let { toast = it; return }
             eng = engine
@@ -227,7 +315,12 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
         activeStatus = eng.status
         runMode = mode
         runJob = scope.launch(Dispatchers.Default) {
-            if (!sim) withContext(Dispatchers.Main) { platform.onRunStarted() }
+            if (!sim) {
+                val usesBrowser = p.inputMethod == com.customtrainableai.model.InputMethod.CHROME ||
+                    p.rewards.rules.any { it.enabled && it.type == com.customtrainableai.model.RuleType.BROWSER_JS }
+                if (usesBrowser) runCatching { platform.browser?.prepare() }
+                withContext(Dispatchers.Main) { platform.onRunStarted() }
+            }
             try {
                 eng.run(p, mode, if (sim) 0.0 else platform.startDelaySec) { brain ->
                     withContext(Dispatchers.Main) { onBrain(brain) }
@@ -261,6 +354,12 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
         if (profile.evolution.autosave) saveQuietly()
     }
 
+    /** Anzahl gleichzeitig spielender Agenten im Simulator. */
+    fun simParallelCount(p: Profile = profile): Int {
+        val pop = p.evolution.population.coerceIn(2, 1000)
+        return (if (p.simParallel <= 0) pop else p.simParallel).coerceIn(1, minOf(pop, 64))
+    }
+
     fun stop() {
         runJob?.cancel()
     }
@@ -281,7 +380,7 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
                 platform.onEditorClosed()
                 return@launch
             }
-            editor = EditorSession(frame, platform.frameToImage(frame), profile, platform.touchOnly)
+            editor = EditorSession(frame, platform.frameToImage(frame), editorProfile(), platform.touchOnly)
         }
     }
 
@@ -290,7 +389,8 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
         if (apply) {
             update {
                 it.copy(
-                    instances = e.instances,
+                    // Chrome-Instanzen (Bild direkt aus Chrome) behalten ihre Bereiche – übernommen werden nur die Positionen
+                    instances = if (it.instances.any { r -> r.x >= VIRTUAL_AREA_X }) it.instances else e.instances,
                     actions = e.actions,
                     rewards = e.rewards,
                 )
@@ -299,6 +399,15 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
         }
         editor = null
         platform.onEditorClosed()
+    }
+
+    /** Editor mit Chrome-Instanzen: Spielfeld des 1. Fensters auf dem Bildschirm zeigen. */
+    private suspend fun editorProfile(): Profile {
+        val p = profile
+        if (p.instances.none { it.x >= VIRTUAL_AREA_X }) return p
+        val sel = p.browser?.selector ?: "canvas"
+        val screen = runCatching { platform.browser?.screenAreas(sel) }.getOrNull().orEmpty()
+        return p.copy(instances = screen.take(1).ifEmpty { listOf(ScreenRect(100, 100, 400, 600)) })
     }
 
     fun usePracticeAreas() {

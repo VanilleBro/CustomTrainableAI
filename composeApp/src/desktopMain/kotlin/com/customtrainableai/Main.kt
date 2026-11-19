@@ -46,6 +46,11 @@ import kotlinx.coroutines.runBlocking
 import kotlin.math.roundToInt
 
 fun main(args: Array<String>) {
+    // Windows: OpenGL statt DirectX – der DirectX-Renderer flackert mit manchen Grafiktreibern beim Überfahren mit der Maus.
+    // Überschreibbar mit -Dskiko.renderApi=DIRECT3D bzw. SOFTWARE.
+    if (System.getProperty("skiko.renderApi") == null && System.getProperty("os.name").lowercase().contains("win")) {
+        System.setProperty("skiko.renderApi", "OPENGL")
+    }
     args.indexOf("--inputdiag").takeIf { it >= 0 }?.let { i ->
         com.customtrainableai.desktop.runInputDiagMain(java.io.File(args.getOrNull(i + 1) ?: "inputdiag.txt"))
         return
@@ -55,6 +60,7 @@ fun main(args: Array<String>) {
         kotlin.system.exitProcess(if (ok) 0 else 1)
     }
     val selftest = args.indexOf("--selftest").takeIf { it >= 0 }?.let { args.drop(it + 1) }
+    val chrometest = args.indexOf("--chrometest").takeIf { it >= 0 }?.let { args.drop(it + 1) }
     val tourDir = args.indexOf("--tour").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
     val diagDir = args.indexOf("--capdiag").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
     application {
@@ -62,7 +68,7 @@ fun main(args: Array<String>) {
         val platform = remember { DesktopPlatform() }
         val state = remember { AppState(platform, scope) }
 
-        if (selftest == null && diagDir == null) {
+        if (selftest == null && diagDir == null && chrometest == null) {
             Window(
                 onCloseRequest = {
                     // Beim Schließen sicherheitshalber noch ein Backup schreiben
@@ -82,6 +88,7 @@ fun main(args: Array<String>) {
         StatusWindow(state, platform)
 
         if (selftest != null) LaunchedEffect(Unit) { runSelfTest(platform, selftest); exitApplication() }
+        if (chrometest != null) LaunchedEffect(Unit) { com.customtrainableai.desktop.runChromeTest(platform, chrometest); exitApplication() }
         if (diagDir != null) LaunchedEffect(Unit) { com.customtrainableai.desktop.runCapDiag(platform, java.io.File(diagDir)); exitApplication() }
         if (tourDir != null) LaunchedEffect(Unit) { runTour(state, platform, java.io.File(tourDir)); exitApplication() }
     }

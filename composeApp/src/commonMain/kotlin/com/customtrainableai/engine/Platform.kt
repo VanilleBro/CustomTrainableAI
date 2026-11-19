@@ -32,6 +32,10 @@ interface Platform {
     val storage: Storage
     val capturer: ScreenCapturer
     val input: InputController
+    /** Liest Spielwerte direkt aus (Chrome-Tabs für BROWSER_JS-Regeln); null = nicht unterstützt. */
+    val probe: ValueProbe? get() = null
+    /** Browser-Spiele (Chrome): Fenster öffnen und Bereiche übernehmen; null = nicht unterstützt. */
+    val browser: BrowserControl? get() = null
 
     /** "dd.MM.yyyy_HH.mm" in Ortszeit. */
     fun timestamp(): String
@@ -58,4 +62,20 @@ interface Platform {
     fun practiceAreas(): List<ScreenRect>
     fun launchInstances(command: String, count: Int): String?
     fun listWindows(): List<WindowInfo>
+}
+
+/** Steuert Chrome-Fenster für Browser-Spiele (nur Windows). */
+interface BrowserControl {
+    /** Öffnet [count] Chrome-Fenster mit [url] nebeneinander. Rückgabe: Fehlermeldung oder null. */
+    suspend fun open(url: String, count: Int): String?
+    /** Ermittelt die Spielfelder (CSS-Selektor) in allen offenen Fenstern, in Fenster-Reihenfolge. */
+    suspend fun areas(selector: String): List<com.customtrainableai.model.ScreenRect>
+    /** Anzahl verbundener Fenster (Tabs). */
+    fun connected(): Int
+    /** Führt JavaScript in allen Fenstern aus (z.B. Einstellungen setzen). Rückgabe: Ergebnisse als Text. */
+    suspend fun runAll(script: String): List<String>
+    /** Spielfelder als Bildschirm-Bereiche (für den Editor). */
+    suspend fun screenAreas(selector: String): List<com.customtrainableai.model.ScreenRect> = emptyList()
+    /** Vor einem Lauf: Lage der Fenster bestimmen. */
+    suspend fun prepare() {}
 }
