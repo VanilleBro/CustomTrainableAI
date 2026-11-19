@@ -15,6 +15,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.unit.dp
 import java.awt.Rectangle
 import java.awt.Robot
 import java.io.File
@@ -197,4 +202,84 @@ fun runSmokeTest(out: File): Boolean {
     sb.appendLine(if (ok) "ALLES OK" else "FEHLGESCHLAGEN")
     out.writeText(sb.toString())
     return ok
+}
+
+/** Diagnose der Hintergrund-Eingabe:  --inputdiag <Datei>. Öffnet ein Übungsfenster und prüft, ob der Schläger reagiert. */
+fun runInputDiagMain(out: File) {
+    androidx.compose.ui.window.application {
+        val kind = PracticeKind.CATCH
+        var coords by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
+        androidx.compose.ui.window.Window(
+            onCloseRequest = ::exitApplication,
+            title = "Übungsspiel Diagnose",
+            alwaysOnTop = true,
+            state = androidx.compose.ui.window.rememberWindowState(
+                size = androidx.compose.ui.unit.DpSize(400.dp, 660.dp),
+                position = androidx.compose.ui.window.WindowPosition(60.dp, 60.dp),
+            ),
+        ) {
+            val density = androidx.compose.ui.platform.LocalDensity.current.density
+            val w = window
+            com.customtrainableai.ui.PracticeGameView(kind, androidx.compose.ui.Modifier.fillMaxSize(), onPlaced = { c -> coords = c })
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                delay(2500)
+                val c = coords!!
+                val p = c.positionInWindow()
+                val loc = w.contentPane.locationOnScreen
+                val area = com.customtrainableai.model.ScreenRect(
+                    loc.x + (p.x / density).toInt(), loc.y + (p.y / density).toInt(),
+                    (c.size.width / density).toInt(), (c.size.height / density).toInt(),
+                )
+                withContext(Dispatchers.IO) {
+                    runCatching { inputDiag(area, out) }.onFailure { out.appendText("FEHLER $it\n") }
+                }
+                exitApplication()
+            }
+        }
+    }
+}
+
+private suspend fun inputDiag(area: com.customtrainableai.model.ScreenRect, out: File) {
+    out.writeText("Bereich $area\n")
+    val u = U32.INSTANCE!!
+    val cap = DesktopCapturer()
+    suspend fun paddleX(): Float {
+        val f = cap.capture(listOf(area)).first()!!
+        var sum = 0.0; var n = 0
+        for (y in (f.height * 0.73f).toInt()..(f.height * 0.78f).toInt()) for (x in 0 until f.width) {
+            val c = f.argb[y * f.width + x]
+            if ((c shr 16 and 0xFF) > 235 && (c shr 8 and 0xFF) > 235 && (c and 0xFF) > 235) { sum += x; n++ }
+        }
+        return if (n == 0) -1f else (sum / n / f.width).toFloat()
+    }
+    val pt = area.point(com.customtrainableai.engine.PracticeLayout.RIGHT_BTN.let { com.customtrainableai.model.RelPoint(it.x + it.w / 2, it.y + it.h / 2) })
+    val ptL = area.point(com.customtrainableai.engine.PracticeLayout.LEFT_BTN.let { com.customtrainableai.model.RelPoint(it.x + it.w / 2, it.y + it.h / 2) })
+    val child = u.WindowFromPoint(com.sun.jna.platform.win32.WinDef.POINT.ByValue(pt.x, pt.y))!!
+    val root = u.GetAncestor(child, U32.GA_ROOT)!!
+    fun cls(h: com.sun.jna.platform.win32.WinDef.HWND): String { val b = CharArray(128); val n = u.GetClassName(h, b, 128); return String(b, 0, n) }
+    out.appendText("child=${cls(child)} root=${cls(root)} same=${child == root}\n")
+    fun lp(h: com.sun.jna.platform.win32.WinDef.HWND, p: com.customtrainableai.model.ScreenPoint): com.sun.jna.platform.win32.WinDef.LPARAM {
+        val q = com.sun.jna.platform.win32.WinDef.POINT(p.x, p.y); u.ScreenToClient(h, q)
+        return com.sun.jna.platform.win32.WinDef.LPARAM((((q.y and 0xFFFF) shl 16) or (q.x and 0xFFFF)).toLong())
+    }
+    val wp0 = com.sun.jna.platform.win32.WinDef.WPARAM(0)
+    val wp1 = com.sun.jna.platform.win32.WinDef.WPARAM(1)
+    suspend fun trial(name: String, target: com.sun.jna.platform.win32.WinDef.HWND, send: Boolean, p: com.customtrainableai.model.ScreenPoint) {
+        val before = paddleX()
+        fun m(msg: Int, wp: com.sun.jna.platform.win32.WinDef.WPARAM) { if (send) u.SendMessage(target, msg, wp, lp(target, p)) else u.PostMessage(target, msg, wp, lp(target, p)) }
+        m(U32.WM_MOUSEMOVE, wp0); m(U32.WM_LBUTTONDOWN, wp1)
+        repeat(10) { delay(100); m(U32.WM_MOUSEMOVE, wp1) }
+        m(U32.WM_LBUTTONUP, wp0)
+        delay(300)
+        val after = paddleX()
+        out.appendText("$name: Schläger ${fmt(before, 3)} -> ${fmt(after, 3)}  ${if (kotlin.math.abs(after - before) > 0.03f) "BEWEGT" else "keine Bewegung"}\n")
+    }
+    trial("Post an Kind (rechts)", child, false, pt)
+    trial("Post an Kind (links)", child, false, ptL)
+    trial("Post an Hauptfenster (rechts)", root, false, pt)
+    trial("Post an Hauptfenster (links)", root, false, ptL)
+    trial("Send an Kind (rechts)", child, true, pt)
+    trial("Send an Kind (links)", child, true, ptL)
+    trial("Send an Hauptfenster (rechts)", root, true, pt)
+    trial("Send an Hauptfenster (links)", root, true, ptL)
 }

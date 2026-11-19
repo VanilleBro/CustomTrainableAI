@@ -46,6 +46,10 @@ import kotlinx.coroutines.runBlocking
 import kotlin.math.roundToInt
 
 fun main(args: Array<String>) {
+    args.indexOf("--inputdiag").takeIf { it >= 0 }?.let { i ->
+        com.customtrainableai.desktop.runInputDiagMain(java.io.File(args.getOrNull(i + 1) ?: "inputdiag.txt"))
+        return
+    }
     args.indexOf("--smoketest").takeIf { it >= 0 }?.let { i ->
         val ok = com.customtrainableai.desktop.runSmokeTest(java.io.File(args.getOrNull(i + 1) ?: "smoketest.txt"))
         kotlin.system.exitProcess(if (ok) 0 else 1)
@@ -102,7 +106,10 @@ private fun PracticeGameWindow(platform: DesktopPlatform, pw: PracticeWindow, al
         val win = window
         val density = LocalDensity.current.density
         MaterialTheme(colorScheme = AppColors) {
-            PracticeGameView(pw.kind, Modifier.fillMaxSize(), onPlaced = { coords ->
+            LaunchedEffect(win) {
+                pw.hwnd = runCatching { com.sun.jna.platform.win32.WinDef.HWND(com.sun.jna.Native.getWindowPointer(win)) }.getOrNull()
+            }
+            PracticeGameView(pw.kind, Modifier.fillMaxSize(), onGame = { pw.game = it }, onPlaced = { coords ->
                 pw.areaProvider = {
                     if (!coords.isAttached || !win.isShowing) {
                         null

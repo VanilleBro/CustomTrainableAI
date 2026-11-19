@@ -179,6 +179,7 @@ class Engine(
         var runGens = 0
         val target = if (mode == RunMode.TRAINING) evo.generationsPerRun.coerceAtLeast(0) else 0
         var lastStatus = -1e9
+        var stuckMsg: String? = null
         var tickCount = 0
         var tpsStart = clock.now()
         var tps = 0f
@@ -238,9 +239,14 @@ class Engine(
                     Phase.STARTING -> if (now >= s.until) {
                         val f = frameOf[s.index]
                         if (f != null) {
-                            if (s.startAttempts < 3 && ep.resetSteps.isNotEmpty() && s.tracker.endConditionVisible(f)) {
+                            if (ep.resetSteps.isNotEmpty() && s.tracker.endConditionVisible(f)) {
+                                // Game Over ist noch zu sehen: Neustart wiederholen. Klappt es dauerhaft nicht, NICHT werten
+                                // (sonst bekäme jeder Agent sinnlos dieselbe Strafe), sondern warten und Hinweis zeigen.
                                 s.startAttempts++
-                                s.phase = Phase.RESETTING; s.stepIdx = 0; s.until = now
+                                s.phase = Phase.RESETTING; s.stepIdx = 0
+                                s.until = if (s.startAttempts <= 3) now else now + 2.0
+                                if (s.startAttempts > 3) stuckMsg = "Instanz ${s.index + 1}: Spiel startet nicht neu (Game Over bleibt sichtbar). " +
+                                    "Kommen die Klicks an? Neustart-Schritte und Eingabe-Methode prüfen."
                             } else {
                                 s.tracker.reset()
                                 s.episodeStart = now
@@ -251,6 +257,7 @@ class Engine(
                                 s.lastCmd = InstanceCommand.NONE
                                 s.pendingEvents = 0
                                 s.phase = Phase.RUNNING
+                                if (s.startAttempts > 3) stuckMsg = null
                             }
                         }
                     }
@@ -382,7 +389,7 @@ class Engine(
                     playback = playbackScores.toList(),
                     bestFitness = bestFitness,
                     ticksPerSecond = tps,
-                    message = pauseMsg ?: message,
+                    message = pauseMsg ?: stuckMsg ?: message,
                 )
             }
 

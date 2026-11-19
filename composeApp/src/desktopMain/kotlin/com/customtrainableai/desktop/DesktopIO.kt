@@ -121,7 +121,11 @@ class DesktopCapturer(private val guard: WindowGuard? = null) : ScreenCapturer {
  * REAL: java.awt.Robot (echter Mauszeiger/Tastatur, eine Maus für alle Instanzen).
  * BACKGROUND: PostMessage an das Fenster unter dem Punkt (Mauszeiger bleibt frei, mehrere Instanzen parallel).
  */
-class DesktopInput(private val guard: WindowGuard? = null) : InputController {
+class DesktopInput(
+    private val guard: WindowGuard? = null,
+    /** Findet ein eigenes Übungsspiel-Fenster zum obersten Fenster (für direkte Eingabe). */
+    private val practiceFor: (HWND) -> PracticeWindow? = { null },
+) : InputController {
     @Volatile var method = InputMethod.REAL
     @Volatile var tapMs = 30
     /** Hinweis für die Status-Anzeige (z.B. Spiel hat keinen Fokus). */
@@ -266,7 +270,29 @@ class DesktopInput(private val guard: WindowGuard? = null) : InputController {
         return u.WindowFromPoint(POINT.ByValue(pt.x, pt.y))
     }
 
+    /** Eigenes Übungsspiel unter diesem Fenster? Dann Eingabe direkt ins Spiel statt per Fenster-Nachricht. */
+    private fun practiceOf(h: HWND): PracticeWindow? {
+        val u = U32.INSTANCE ?: return null
+        val root = u.GetAncestor(h, U32.GA_ROOT) ?: h
+        return practiceFor(root)?.takeIf { it.game != null }
+    }
+
+    private fun routeMouse(pw: PracticeWindow, msg: Int, wParam: Int, p: ScreenPoint) {
+        val game = pw.game ?: return
+        val a = pw.areaProvider?.invoke() ?: return
+        val x = (p.x - a.x).toFloat() / a.w
+        val y = (p.y - a.y).toFloat() / a.h
+        javax.swing.SwingUtilities.invokeLater {
+            when (msg) {
+                U32.WM_LBUTTONDOWN -> game.pointerDown(x, y)
+                U32.WM_LBUTTONUP -> game.pointerUp()
+                U32.WM_MOUSEMOVE -> if (wParam and U32.MK_LBUTTON != 0) game.pointerMove(x, y)
+            }
+        }
+    }
+
     private fun post(h: HWND, msg: Int, wParam: Int, p: ScreenPoint) {
+        practiceOf(h)?.let { return routeMouse(it, msg, wParam, p) }
         val u = U32.INSTANCE ?: return
         val pt = physical(p)
         u.ScreenToClient(h, pt)
@@ -275,6 +301,12 @@ class DesktopInput(private val guard: WindowGuard? = null) : InputController {
     }
 
     private fun postKey(h: HWND, vk: Int, down: Boolean) {
+        practiceOf(h)?.let { pw ->
+            val name = Keys.name(vk) ?: return
+            val game = pw.game ?: return
+            javax.swing.SwingUtilities.invokeLater { game.key(name, down) }
+            return
+        }
         val u = U32.INSTANCE ?: return
         val scan = u.MapVirtualKey(vk, 0)
         var lp = 1L or (scan.toLong() shl 16)

@@ -64,8 +64,10 @@ nicht mehr in diesen Bereich geklickt, bis das Spiel wieder zu sehen ist.
 - **Echte Maus/Tastatur:** funktioniert mit fast allen Spielen, belegt aber Maus und Tastatur. Mehrere Instanzen
   teilen sich die eine Maus, und Tasten gehen an das Fenster mit dem Fokus.
 - **Im Hintergrund (Fenster-Nachrichten):** Maus und Tastatur bleiben frei, und mehrere Instanzen laufen echt
-  parallel. Klappt mit vielen Fenster-Programmen und Emulatoren, aber nicht mit jedem Spiel (DirectInput und
-  manche Browser-Spiele ignorieren das).
+  parallel. Das klappt **nicht mit jedem Spiel**: Viele Spiele ignorieren solche Nachrichten komplett, z.B. Unity,
+  DirectX/Vollbild, Java und manche Browser-Spiele. Deshalb kurz testen: Bewegt sich im Spiel nichts, „Echte
+  Maus/Tastatur“ nehmen. Das eingebaute Übungsspiel bekommt die Eingaben direkt und funktioniert mit beiden
+  Methoden.
 
 ### Android-Berechtigungen
 

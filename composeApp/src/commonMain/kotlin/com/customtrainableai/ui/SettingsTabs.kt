@@ -101,7 +101,9 @@ fun ActionsTab(state: AppState) {
                     Hint("⚠️ ${p.instances.size} Instanzen mit „${a.mode.label}“: bitte „Hintergrund“ verwenden.", MaterialTheme.colorScheme.error)
                 }
             } else {
-                Hint("Hintergrund: Klicks und Tasten werden direkt an das Fenster unter dem Punkt geschickt – der Mauszeiger bleibt frei, mehrere Instanzen können gleichzeitig halten/ziehen/Tasten drücken. Manche Spiele (DirectInput/Vollbild) ignorieren das – dann „Echt“ verwenden.")
+                Hint("Hintergrund: Klicks und Tasten werden als Fenster-Nachricht an das Fenster unter dem Punkt geschickt – der Mauszeiger bleibt frei, mehrere Instanzen können gleichzeitig halten/ziehen/Tasten drücken. " +
+                    "Das klappt NICHT mit jedem Spiel: Viele Spiele (Unity, DirectX/Vollbild, Java, manche Browser) ignorieren solche Nachrichten. " +
+                    "Kurz testen: Training starten und schauen, ob sich im Spiel etwas bewegt – wenn nicht, „Echt“ verwenden. Das eingebaute Übungsspiel funktioniert mit beiden.")
             }
         }
     }

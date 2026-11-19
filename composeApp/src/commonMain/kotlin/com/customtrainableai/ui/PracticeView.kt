@@ -45,8 +45,14 @@ private fun c(v: Int) = Color(v)
  * [onPlaced] meldet die Lage der Spielfläche (für "Bereich an Übungsspiel anpassen").
  */
 @Composable
-fun PracticeGameView(kind: PracticeKind, modifier: Modifier = Modifier, onPlaced: (LayoutCoordinates) -> Unit = {}) {
+fun PracticeGameView(
+    kind: PracticeKind,
+    modifier: Modifier = Modifier,
+    onPlaced: (LayoutCoordinates) -> Unit = {},
+    onGame: (PracticeGame) -> Unit = {},
+) {
     val game = remember(kind) { PracticeGame(kind) }
+    LaunchedEffect(game) { onGame(game) }
     var tick by remember { mutableLongStateOf(0L) }
     val focus = remember { FocusRequester() }
     val measurer = rememberTextMeasurer()

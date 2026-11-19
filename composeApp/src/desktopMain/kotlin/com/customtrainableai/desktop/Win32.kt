@@ -19,6 +19,7 @@ interface U32 : StdCallLibrary {
     fun ScreenToClient(hWnd: HWND, pt: POINT): Boolean
     fun ClientToScreen(hWnd: HWND, pt: POINT): Boolean
     fun PostMessage(hWnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM): Boolean
+    fun SendMessage(hWnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM): com.sun.jna.platform.win32.WinDef.LRESULT
     fun GetAsyncKeyState(vKey: Int): Short
     fun EnumWindows(cb: WNDENUMPROC, data: Pointer?): Boolean
     fun IsWindowVisible(hWnd: HWND): Boolean
@@ -73,6 +74,13 @@ object Keys {
             "RIGHT" -> 0x27
             else -> null
         }
+    }
+
+    /** Umkehrung von [vk] für die Tasten, die das Übungsspiel kennt. */
+    fun name(vk: Int): String? = when (vk) {
+        0x26 -> "UP"; 0x28 -> "DOWN"; 0x25 -> "LEFT"; 0x27 -> "RIGHT"; 0x20 -> "SPACE"; 0x0D -> "ENTER"
+        in 0x41..0x5A -> vk.toChar().toString()
+        else -> null
     }
 
     /** Pfeiltasten sind "erweiterte" Tasten (wichtig für das lParam bei PostMessage). */

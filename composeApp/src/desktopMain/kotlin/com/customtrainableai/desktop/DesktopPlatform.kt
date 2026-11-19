@@ -38,6 +38,9 @@ import javax.imageio.ImageIO
 class PracticeWindow(val id: Int, val kind: PracticeKind) {
     /** Liefert die aktuelle Lage der Spielfläche in Bildschirm-Koordinaten (wird von der Oberfläche gesetzt). */
     @Volatile var areaProvider: (() -> ScreenRect?)? = null
+    /** Das laufende Spiel und sein Fenster – Eingaben der KI gehen direkt hinein (Java-Fenster ignorieren Fenster-Nachrichten). */
+    @Volatile var game: com.customtrainableai.engine.PracticeGame? = null
+    @Volatile var hwnd: com.sun.jna.platform.win32.WinDef.HWND? = null
 }
 
 class DesktopPlatform(baseDir: File = File(System.getProperty("user.home"), "CustomTrainableAI")) : Platform {
@@ -55,7 +58,7 @@ class DesktopPlatform(baseDir: File = File(System.getProperty("user.home"), "Cus
     /** Klickt/bewertet nur, solange das Spielfenster im Bereich liegt. */
     val guard = WindowGuard()
     override val capturer = DesktopCapturer(guard)
-    override val input = DesktopInput(guard)
+    override val input = DesktopInput(guard) { root -> practiceWindows.toList().firstOrNull { it.hwnd == root } }
     override var onStopRequest: (() -> Unit)? = null
 
     var mainWindow: ComposeWindow? = null
