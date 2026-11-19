@@ -139,10 +139,10 @@ class DesktopPlatform(baseDir: File = File(System.getProperty("user.home"), "Cus
         val usesJs = profile.rewards.rules.any { it.enabled && it.type == com.customtrainableai.model.RuleType.BROWSER_JS }
         val virtual = profile.instances.any { it.x >= ChromeBridge.VIRTUAL_X }
         if ((profile.inputMethod == InputMethod.CHROME || usesJs || virtual) && chrome.connected() == 0) {
-            return "Keine Chrome-Fenster verbunden. Im Tab „Bereiche“ zuerst „Chrome-Fenster öffnen“."
+            return "Chrome ist nicht verbunden. Im Tab „Bereiche“ zuerst „Chrome-Tabs öffnen“."
         }
         if (virtual && profile.instances.any { chrome.tabFor(it) == null }) {
-            return "Es sind weniger Chrome-Fenster offen als Instanzen. „Chrome-Fenster öffnen“ bzw. „Bereiche aus Chrome übernehmen“."
+            return "Es sind weniger Chrome-Tabs offen als Instanzen. „Chrome-Tabs öffnen“ bzw. „Bereiche aus Chrome übernehmen“."
         }
         profile.browser?.let { chrome.useSelector(it.selector) }
         val b = primaryScreenBounds()
@@ -152,6 +152,13 @@ class DesktopPlatform(baseDir: File = File(System.getProperty("user.home"), "Cus
             }
         }
         return null
+    }
+
+    override fun onBrowserRunStarted() {
+        // Eingaben gehen nur an Chrome: App nicht minimieren, kein Not-Stopp über Maus-Ecke (man arbeitet nebenbei)
+        statusVisible = false
+        watcher?.cancel()
+        watcher = null
     }
 
     override fun onRunStarted() {

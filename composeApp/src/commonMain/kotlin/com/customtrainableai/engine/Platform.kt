@@ -53,6 +53,8 @@ interface Platform {
     /** Prüft/konfiguriert vor dem Start. Rückgabe = Fehlermeldung oder null. */
     fun beforeRun(profile: Profile): String?
     fun onRunStarted()
+    /** Start eines Laufs, der nur über Chrome steuert (keine echte Maus/Tastatur): App bleibt offen und sichtbar. */
+    fun onBrowserRunStarted() = onRunStarted()
     fun onRunStopped()
     var onStopRequest: (() -> Unit)?
     /** Status-Text für Blase/Statusfenster. */
@@ -64,18 +66,26 @@ interface Platform {
     fun listWindows(): List<WindowInfo>
 }
 
-/** Steuert Chrome-Fenster für Browser-Spiele (nur Windows). */
+/** Steuert Chrome für Browser-Spiele (nur Windows). */
 interface BrowserControl {
-    /** Öffnet [count] Chrome-Fenster mit [url] nebeneinander. Rückgabe: Fehlermeldung oder null. */
-    suspend fun open(url: String, count: Int): String?
-    /** Ermittelt die Spielfelder (CSS-Selektor) in allen offenen Fenstern, in Fenster-Reihenfolge. */
+    /** Öffnet Chrome mit [cfg].windows Tabs bzw. Fenstern. Rückgabe: Fehlermeldung oder null. */
+    suspend fun open(cfg: com.customtrainableai.model.BrowserConfig): String?
+    /** Ermittelt die Spielfelder (CSS-Selektor) in allen offenen Tabs, in Tab-Reihenfolge. */
     suspend fun areas(selector: String): List<com.customtrainableai.model.ScreenRect>
-    /** Anzahl verbundener Fenster (Tabs). */
+    /** Anzahl verbundener Tabs. */
     fun connected(): Int
-    /** Führt JavaScript in allen Fenstern aus (z.B. Einstellungen setzen). Rückgabe: Ergebnisse als Text. */
+    /** Führt JavaScript in allen Tabs aus (z.B. Einstellungen setzen). Rückgabe: Ergebnisse als Text. */
     suspend fun runAll(script: String): List<String>
     /** Spielfelder als Bildschirm-Bereiche (für den Editor). */
     suspend fun screenAreas(selector: String): List<com.customtrainableai.model.ScreenRect> = emptyList()
-    /** Vor einem Lauf: Lage der Fenster bestimmen. */
-    suspend fun prepare() {}
+    /** Vor einem Lauf: Spielfelder vermessen, Zeitsteuerung bzw. Bild-Stream starten. */
+    suspend fun prepare(cfg: com.customtrainableai.model.BrowserConfig?) {}
+    /** Nach einem Lauf: Seiten laufen wieder normal. */
+    suspend fun release() {}
+    /** Chrome schließen. */
+    suspend fun closeAll() {}
+    /** Uhr, mit der die KI die Spielzeit selbst weiterschaltet (Zeitsteuerung); null = Echtzeit. */
+    fun stepClock(): Clock? = null
+    /** Aktuelle Bilder aller Tabs für die Live-Ansicht. */
+    fun previews(): List<Frame?> = emptyList()
 }

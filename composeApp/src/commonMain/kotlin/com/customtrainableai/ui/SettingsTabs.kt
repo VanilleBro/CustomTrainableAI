@@ -124,52 +124,68 @@ fun PointRow(label: String, p: RelPoint, onChange: (RelPoint) -> Unit) {
 fun AreasTab(state: AppState) {
     val p = state.profile
     var windows by remember { mutableStateOf<List<WindowInfo>?>(null) }
-    Section("Spielbereiche (eine Instanz pro Rechteck)") {
-        Hint("Jedes Rechteck ist eine eigene Instanz des Spiels. Alle Instanzen trainieren gleichzeitig verschiedene Agenten – mit 4 Instanzen ist eine Generation ~4× schneller fertig. Klickpunkte und Belohnungen gelten relativ zum Rechteck, also für alle Instanzen gleich.")
-        ButtonRow {
-            Button(onClick = { state.openEditor(3) }) { Text("Editor öffnen (Screenshot in 3 s)") }
-            OutlinedButton(onClick = { state.openEditor(0) }) { Text("Editor sofort") }
-            FilledTonalButton(onClick = {
-                state.update { pr ->
-                    val last = pr.instances.lastOrNull() ?: ScreenRect()
-                    pr.copy(instances = pr.instances + ScreenRect(last.x + last.w + 10, last.y, last.w, last.h))
-                }
-            }) { Text("+ Instanz") }
-            if (p.practiceKind != null) OutlinedButton(onClick = { state.usePracticeAreas() }) { Text("An Übungsspiel anpassen") }
-            if (state.platform.supportsWindowList) OutlinedButton(onClick = { windows = state.platform.listWindows() }) { Text("An Fenster anpassen…") }
-        }
-        p.instances.forEachIndexed { i, r ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Instanz ${i + 1}", Modifier.width(80.dp), fontWeight = FontWeight.Medium)
-                fun set(nr: ScreenRect) = state.update { pr -> pr.copy(instances = pr.instances.toMutableList().also { it[i] = nr.normalized() }) }
-                IntField("x", r.x, { set(r.copy(x = it)) }, Modifier.width(90.dp), -10000, 100000)
-                IntField("y", r.y, { set(r.copy(y = it)) }, Modifier.width(90.dp), -10000, 100000)
-                IntField("Breite", r.w, { set(r.copy(w = it)) }, Modifier.width(90.dp), 8, 100000)
-                IntField("Höhe", r.h, { set(r.copy(h = it)) }, Modifier.width(90.dp), 8, 100000)
-                if (p.instances.size > 1) TextButton(onClick = { state.update { pr -> pr.copy(instances = pr.instances.filterIndexed { k, _ -> k != i }) } }) { Text("✕") }
-            }
-        }
-    }
-
-    if (state.platform.browser != null) {
-        Section("Browser-Spiel (Chrome)") {
-            Hint("Öffnet ein eigenes, ferngesteuertes Chrome (eigenes Profil) mit mehreren Fenstern nebeneinander. Jedes Fenster ist eine Instanz – so viele Agenten spielen gleichzeitig. Klicks und Tasten gehen direkt an den jeweiligen Tab, deine Maus und Tastatur bleiben frei. Die KI sieht den Bildschirm: Fenster nicht verdecken oder minimieren.")
-            val b = p.browser ?: com.customtrainableai.model.BrowserConfig()
-            fun setB(nb: com.customtrainableai.model.BrowserConfig) = state.update { it.copy(browser = nb) }
-            Fields {
-                TextField("Adresse des Spiels", b.url, { setB(b.copy(url = it)) }, Modifier.fillMaxWidth())
-                IntField("Fenster (= Agenten gleichzeitig)", b.windows, { setB(b.copy(windows = it)) }, Modifier.width(230.dp), 1, 12)
-                TextField("Spielfeld (CSS-Selektor)", b.selector, { setB(b.copy(selector = it)) }, Modifier.width(240.dp))
-            }
+    val areasSection: @Composable () -> Unit = {
+        Section("Spielbereiche (eine Instanz pro Rechteck)") {
+            Hint("Jedes Rechteck ist eine eigene Instanz des Spiels. Alle Instanzen trainieren gleichzeitig verschiedene Agenten – mit 4 Instanzen ist eine Generation ~4× schneller fertig. Klickpunkte und Belohnungen gelten relativ zum Rechteck, also für alle Instanzen gleich.")
             ButtonRow {
-                Button(onClick = { if (p.browser == null) setB(b); state.browserOpen() }, enabled = !state.browserBusy && b.url.isNotBlank()) { Text("Chrome-Fenster öffnen") }
-                OutlinedButton(onClick = { state.browserSetup() }, enabled = !state.browserBusy && b.setupScript.isNotBlank()) { Text("Spiel-Einstellungen setzen") }
-                OutlinedButton(onClick = { if (p.browser == null) setB(b); state.browserAdopt() }, enabled = !state.browserBusy) { Text("Bereiche aus Chrome übernehmen") }
+                Button(onClick = { state.openEditor(3) }) { Text("Editor öffnen (Screenshot in 3 s)") }
+                OutlinedButton(onClick = { state.openEditor(0) }) { Text("Editor sofort") }
+                FilledTonalButton(onClick = {
+                    state.update { pr ->
+                        val last = pr.instances.lastOrNull() ?: ScreenRect()
+                        pr.copy(instances = pr.instances + ScreenRect(last.x + last.w + 10, last.y, last.w, last.h))
+                    }
+                }) { Text("+ Instanz") }
+                if (p.practiceKind != null) OutlinedButton(onClick = { state.usePracticeAreas() }) { Text("An Übungsspiel anpassen") }
+                if (state.platform.supportsWindowList) OutlinedButton(onClick = { windows = state.platform.listWindows() }) { Text("An Fenster anpassen…") }
             }
-            if (state.browserInfo.isNotBlank()) Hint(state.browserInfo, MaterialTheme.colorScheme.tertiary)
-            TextField("Einstellungs-Skript (JavaScript, optional – läuft in jedem Fenster)", b.setupScript, { setB(b.copy(setupScript = it)) }, Modifier.fillMaxWidth())
+            val virtual = p.instances.isNotEmpty() && p.instances.all { it.x >= com.customtrainableai.model.VIRTUAL_AREA_X }
+            if (virtual) Hint("${p.instances.size} Chrome-Tab(s) als Instanzen – werden beim Öffnen von Chrome automatisch übernommen.")
+            if (!virtual) p.instances.forEachIndexed { i, r ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Instanz ${i + 1}", Modifier.width(80.dp), fontWeight = FontWeight.Medium)
+                    fun set(nr: ScreenRect) = state.update { pr -> pr.copy(instances = pr.instances.toMutableList().also { it[i] = nr.normalized() }) }
+                    IntField("x", r.x, { set(r.copy(x = it)) }, Modifier.width(90.dp), -10000, 100000)
+                    IntField("y", r.y, { set(r.copy(y = it)) }, Modifier.width(90.dp), -10000, 100000)
+                    IntField("Breite", r.w, { set(r.copy(w = it)) }, Modifier.width(90.dp), 8, 100000)
+                    IntField("Höhe", r.h, { set(r.copy(h = it)) }, Modifier.width(90.dp), 8, 100000)
+                    if (p.instances.size > 1) TextButton(onClick = { state.update { pr -> pr.copy(instances = pr.instances.filterIndexed { k, _ -> k != i }) } }) { Text("✕") }
+                }
+            }
         }
     }
+    val chromeSection: @Composable () -> Unit = {
+        if (state.platform.browser != null) {
+            Section("Browser-Spiel (Chrome)") {
+                val b = p.browser ?: com.customtrainableai.model.BrowserConfig()
+                fun setB(nb: com.customtrainableai.model.BrowserConfig) = state.update { it.copy(browser = nb) }
+                Hint(
+                    if (b.timeControl) "Öffnet ein eigenes, ferngesteuertes Chrome (eigenes Profil) mit beliebig vielen Tabs in EINEM Fenster. Jeder Tab ist eine Instanz – so viele Agenten spielen gleichzeitig. " +
+                        "Die KI schaltet die Spielzeit selbst weiter und liest das Bild direkt aus dem Spielfeld: Tabs müssen nicht sichtbar sein, das Spiel läuft oft schneller als in Echtzeit, und du kannst nebenbei ganz normal weiterarbeiten. " +
+                        "Am schnellsten sind etwa so viele Tabs wie dein Prozessor Kerne hat (×1,5); mehr bringt kaum etwas."
+                    else "Öffnet ein eigenes, ferngesteuertes Chrome mit mehreren Fenstern in Echtzeit. Jedes Fenster ist eine Instanz. Die Fenster dürfen sich überlappen, aber nicht minimiert werden.",
+                )
+                Fields {
+                    TextField("Adresse des Spiels", b.url, { setB(b.copy(url = it)) }, Modifier.fillMaxWidth())
+                    IntField(if (b.timeControl) "Tabs (= Agenten gleichzeitig)" else "Fenster (= Agenten gleichzeitig)", b.windows, { setB(b.copy(windows = it)) }, Modifier.width(230.dp), 1, if (b.timeControl) 64 else 12)
+                    TextField("Spielfeld (CSS-Selektor)", b.selector, { setB(b.copy(selector = it)) }, Modifier.width(240.dp))
+                }
+                LabeledSwitch("Chrome unsichtbar im Hintergrund (kein Fenster auf dem Bildschirm)", b.hidden, { setB(b.copy(hidden = it)) })
+                LabeledSwitch("Zeitsteuerung (alle Tabs in einem Fenster, schneller als Echtzeit)", b.timeControl, { setB(b.copy(timeControl = it)) })
+                if (b.hidden) Hint("Muss man auf der Seite einmal etwas eingeben (z.B. einen Namen), „unsichtbar“ kurz ausschalten, Chrome öffnen, eingeben – danach wieder einschalten.")
+                ButtonRow {
+                    Button(onClick = { if (p.browser == null) setB(b); state.browserOpen() }, enabled = !state.browserBusy && !state.isRunning && b.url.isNotBlank()) { Text(if (b.timeControl) "Chrome-Tabs öffnen" else "Chrome-Fenster öffnen") }
+                    OutlinedButton(onClick = { state.browserSetup() }, enabled = !state.browserBusy && !state.isRunning && b.setupScript.isNotBlank()) { Text("Spiel-Einstellungen setzen") }
+                    OutlinedButton(onClick = { if (p.browser == null) setB(b); state.browserAdopt() }, enabled = !state.browserBusy && !state.isRunning) { Text("Bereiche aus Chrome übernehmen") }
+                    OutlinedButton(onClick = { state.browserClose() }, enabled = !state.browserBusy && !state.isRunning) { Text("Chrome schließen") }
+                }
+                if (state.browserInfo.isNotBlank()) Hint(state.browserInfo, MaterialTheme.colorScheme.tertiary)
+                TextField("Einstellungs-Skript (JavaScript, optional – läuft in jedem Tab)", b.setupScript, { setB(b.copy(setupScript = it)) }, Modifier.fillMaxWidth())
+            }
+        }
+    }
+    // Bei Browser-Spielen stehen die Chrome-Einstellungen oben
+    if (p.browser != null) { chromeSection(); areasSection() } else { areasSection(); chromeSection() }
 
     if (state.platform.supportsLaunch) {
         Section("Spiel-Instanzen starten (Windows)") {

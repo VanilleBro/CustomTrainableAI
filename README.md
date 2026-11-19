@@ -31,17 +31,27 @@ Unter [Releases](../../releases) liegen:
 ## Browser-Spiele in Chrome (z.B. Neon Flap)
 
 Die App startet ein **eigenes, ferngesteuertes Chrome** (eigenes Profil, getrennt von deinem normalen Chrome) mit
-mehreren Fenstern. **Jedes Fenster ist ein Agent, der gleichzeitig spielt** – die Anzahl stellst du im Tab
-„Bereiche“ ein (z.B. 12). Bild und Eingaben laufen direkt über Chrome (DevTools): Die Fenster dürfen sich
-überlappen oder verdeckt sein, Maus und Tastatur bleiben frei. Nur schließen oder minimieren darf man sie nicht.
+**beliebig vielen Tabs in einem einzigen Fenster** – standardmäßig **unsichtbar**, also ganz ohne Fenster auf dem
+Bildschirm. **Jeder Tab ist ein Agent, der gleichzeitig spielt**; die Anzahl stellst du im Tab „Bereiche“ ein.
 
-Fertige Vorlage **„Neon Flap (Chrome)“** für https://addict-games.netlify.app/#/flap:
+**Zeitsteuerung:** Die App ersetzt in jedem Tab die Uhr der Seite (`requestAnimationFrame`, `performance.now`, Timer)
+und schaltet die Spielzeit pro KI-Takt selbst weiter. Das Bild wird direkt aus dem Spielfeld gelesen. Dadurch
+laufen auch Hintergrund-Tabs, das Spiel läuft oft schneller als in Echtzeit, und du kannst nebenbei ganz normal
+weiterarbeiten. Am schnellsten sind etwa so viele Tabs, wie der Prozessor Kerne hat (×1,5) – auf einem 16-Thread-PC
+schafften 24 Tabs zusammen rund 50–55-fache Echtzeit, 48 Tabs waren wieder langsamer. Im Tab „Training“ zeigt
+**„Live – alle Chrome-Tabs“** alle Spiele gleichzeitig. Netzwerk-Anfragen der Seite werden während des Trainings
+über alle Tabs auf höchstens eine alle 2 Sekunden gedrosselt, damit der Server der Seite nicht überlastet wird.
+Ohne Zeitsteuerung (Schalter aus) läuft jedes Spiel wie früher in einem eigenen Fenster in Echtzeit.
 
-1. Startseite → **Vorlage: Neon Flap (Chrome)** → Tab „Bereiche“ → **Chrome-Fenster öffnen**.
-2. Beim allerersten Mal fragt die Seite nach einem Namen für die Bestenliste: in **einem** Fenster eintragen und
-   danach **Spiel-Einstellungen setzen** klicken. Das Skript stellt in allen Fenstern kleinste Lücke, Tempo „Irre“
-   und $1 Einsatz ein (anpassbar im Feld „Einstellungs-Skript“).
+Fertige Vorlage **„Neon Flap (Chrome)“** für https://addict-games.netlify.app/#/flap (24 Tabs, unsichtbar):
+
+1. Startseite → **Vorlage: Neon Flap (Chrome)** → Tab „Bereiche“ → **Chrome-Tabs öffnen**.
+2. Beim allerersten Mal fragt die Seite nach einem Namen für die Bestenliste: dafür „unsichtbar“ kurz ausschalten,
+   Chrome öffnen, den Namen eintragen, „unsichtbar“ wieder einschalten und erneut **Chrome-Tabs öffnen**. Das
+   Einstellungs-Skript stellt in allen Tabs kleinste Lücke, Tempo „Irre“ und $1 Einsatz ein.
 3. Tab „Training“ → **▶ Training starten**.
+4. **Chrome schließen** gibt die Rechenzeit wieder frei (beim Beenden der App wird ein unsichtbares Chrome
+   automatisch mit geschlossen).
 
 Belohnung: Tore werden direkt aus der Seite gezählt (+3), Crash beendet die Runde (−5), dazu kleine Belohnungen
 fürs Fliegen und dafür, auf Höhe der nächsten Lücke zu sein. Das Spiel nutzt Spielgeld („kein echtes Geld“): jede

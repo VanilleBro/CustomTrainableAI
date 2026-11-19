@@ -276,6 +276,13 @@ data class BrowserConfig(
     val selector: String = "canvas",
     /** JavaScript, das in jedem Fenster die Spiel-Einstellungen setzt (optional). Liefert es "reload", wird neu geladen und erneut ausgeführt. */
     val setupScript: String = "",
+    /**
+     * Zeitsteuerung: alle Tabs in einem Fenster, die KI schaltet die Spielzeit selbst weiter (schneller als Echtzeit,
+     * Tabs müssen nicht sichtbar sein). Aus = jedes Spiel in einem eigenen Fenster in Echtzeit.
+     */
+    val timeControl: Boolean = true,
+    /** Chrome unsichtbar im Hintergrund laufen lassen (kein Fenster auf dem Bildschirm). */
+    val hidden: Boolean = true,
 )
 
 fun parseColor(hex: String): Int {

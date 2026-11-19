@@ -62,6 +62,7 @@ fun main(args: Array<String>) {
     val selftest = args.indexOf("--selftest").takeIf { it >= 0 }?.let { args.drop(it + 1) }
     val chrometest = args.indexOf("--chrometest").takeIf { it >= 0 }?.let { args.drop(it + 1) }
     val tourDir = args.indexOf("--tour").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
+    val chromeTourDir = args.indexOf("--chrometour").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
     val diagDir = args.indexOf("--capdiag").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
     application {
         val scope = rememberCoroutineScope()
@@ -91,6 +92,7 @@ fun main(args: Array<String>) {
         if (chrometest != null) LaunchedEffect(Unit) { com.customtrainableai.desktop.runChromeTest(platform, chrometest); exitApplication() }
         if (diagDir != null) LaunchedEffect(Unit) { com.customtrainableai.desktop.runCapDiag(platform, java.io.File(diagDir)); exitApplication() }
         if (tourDir != null) LaunchedEffect(Unit) { runTour(state, platform, java.io.File(tourDir)); exitApplication() }
+        if (chromeTourDir != null) LaunchedEffect(Unit) { com.customtrainableai.desktop.runChromeTour(state, platform, java.io.File(chromeTourDir)); exitApplication() }
     }
 }
 

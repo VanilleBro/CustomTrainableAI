@@ -60,6 +60,8 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
     var simPreview by mutableStateOf<Frame?>(null)
     /** Bilder aller gleichzeitig spielenden Simulator-Agenten. */
     var simFrames by mutableStateOf<List<Frame?>>(emptyList())
+    /** Live-Bilder aller Chrome-Tabs werden gezeigt (Training mit Browser-Spiel). */
+    var browserLive by mutableStateOf(false)
 
     val engine = Engine(platform.capturer, platform.input, RealClock, platform.touchOnly, probe = platform.probe)
     var activeStatus: StateFlow<EngineStatus> by mutableStateOf(engine.status)
@@ -102,7 +104,7 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
     fun newNeonFlap() {
         newProfile(com.customtrainableai.model.Templates.neonFlap())
         tab = 2
-        toast = "Vorlage angelegt – jetzt „Chrome-Fenster öffnen“."
+        toast = "Vorlage angelegt – jetzt „Chrome-Tabs öffnen“."
     }
 
     // ---------------- Browser (Chrome) ----------------
@@ -128,7 +130,11 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
             kotlinx.coroutines.delay(3500)
             res = b.runAll(script)
         }
-        return res.mapIndexed { i, r -> "Fenster ${i + 1}: ${r.trim('"')}" }.joinToString("\n")
+        val texts = res.map { it.trim('"') }
+        // Gleiche Ergebnisse zusammenfassen (sonst eine Zeile pro Tab)
+        return texts.withIndex().groupBy({ it.value }, { it.index + 1 }).entries.joinToString("\n") { (text, tabs) ->
+            (if (tabs.size == texts.size && tabs.size > 1) "Alle ${tabs.size} Tabs" else "Tab ${tabs.joinToString(", ")}") + ": $text"
+        }
     }
 
     private suspend fun adopt(b: com.customtrainableai.engine.BrowserControl, selector: String): String {
@@ -142,12 +148,16 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
     fun browserOpen() {
         val cfg = profile.browser ?: return
         browserTask("Chrome wird geöffnet") { b ->
-            b.open(cfg.url, cfg.windows)?.let { return@browserTask it }
-            kotlinx.coroutines.delay(4000)
+            b.open(cfg)?.let { return@browserTask it }
+            kotlinx.coroutines.delay(if (cfg.timeControl) 5000 else 4000)
             val setup = if (cfg.setupScript.isNotBlank()) runSetup(b, cfg.setupScript) + "\n" else ""
             kotlinx.coroutines.delay(500)
             setup + adopt(b, cfg.selector)
         }
+    }
+
+    fun browserClose() {
+        browserTask("Chrome wird geschlossen") { b -> b.closeAll(); "Chrome geschlossen." }
     }
 
     fun browserSetup() {
@@ -310,19 +320,26 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
             return
         } else {
             platform.beforeRun(p)?.let { toast = it; return }
-            eng = engine
+            eng = if (usesStepping(p)) {
+                // Zeitsteuerung: die KI schaltet die Spielzeit in allen Chrome-Tabs selbst weiter
+                val clock = platform.browser?.stepClock() ?: RealClock
+                Engine(platform.capturer, platform.input, clock, platform.touchOnly, statusInterval = 0.5, probe = platform.probe)
+            } else engine
         }
+        val stepped = usesStepping(p)
+        val usesBrowser = usesBrowser(p)
         activeStatus = eng.status
         runMode = mode
         runJob = scope.launch(Dispatchers.Default) {
             if (!sim) {
-                val usesBrowser = p.inputMethod == com.customtrainableai.model.InputMethod.CHROME ||
-                    p.rewards.rules.any { it.enabled && it.type == com.customtrainableai.model.RuleType.BROWSER_JS }
-                if (usesBrowser) runCatching { platform.browser?.prepare() }
-                withContext(Dispatchers.Main) { platform.onRunStarted() }
+                if (usesBrowser) runCatching { platform.browser?.prepare(p.browser) }
+                withContext(Dispatchers.Main) {
+                    if (p.inputMethod == com.customtrainableai.model.InputMethod.CHROME) platform.onBrowserRunStarted() else platform.onRunStarted()
+                }
             }
             try {
-                eng.run(p, mode, if (sim) 0.0 else platform.startDelaySec) { brain ->
+                // Bei Zeitsteuerung muss man nicht erst zum Spiel wechseln -> kein Countdown
+                eng.run(p, mode, if (sim || stepped) 0.0 else platform.startDelaySec) { brain ->
                     withContext(Dispatchers.Main) { onBrain(brain) }
                 }
             } catch (e: CancellationException) {
@@ -330,8 +347,10 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) { toast = "Fehler im Training: ${e.message}" }
             } finally {
+                if (usesBrowser) withContext(NonCancellable) { runCatching { platform.browser?.release() } }
                 withContext(NonCancellable + Dispatchers.Main) {
                     runMode = RunMode.IDLE
+                    browserLive = false
                     if (!sim) platform.onRunStopped()
                     eng.status.value.message.takeIf { it.isNotBlank() }?.let { toast = it }
                 }
@@ -345,8 +364,26 @@ class AppState(val platform: Platform, private val scope: CoroutineScope) {
                     delay(500)
                 }
             }
+            if (usesBrowser && p.instances.any { it.x >= com.customtrainableai.model.VIRTUAL_AREA_X }) {
+                // Live-Ansicht aller Chrome-Tabs in der App (die Tabs selbst müssen nicht sichtbar sein)
+                browserLive = true
+                scope.launch {
+                    while (isRunning) {
+                        val frames = withContext(Dispatchers.Default) { runCatching { platform.browser?.previews() }.getOrNull().orEmpty() }
+                        simFrames = frames.take(p.instances.size)
+                        delay(300)
+                    }
+                }
+            }
         }
     }
+
+    private fun usesBrowser(p: Profile) = p.inputMethod == com.customtrainableai.model.InputMethod.CHROME ||
+        p.rewards.rules.any { it.enabled && it.type == com.customtrainableai.model.RuleType.BROWSER_JS }
+
+    /** Training mit Zeitsteuerung in Chrome (KI gibt den Takt vor). */
+    private fun usesStepping(p: Profile) = platform.browser != null && usesBrowser(p) && (p.browser?.timeControl ?: true) &&
+        p.instances.isNotEmpty() && p.instances.all { it.x >= com.customtrainableai.model.VIRTUAL_AREA_X }
 
     private fun onBrain(b: Brain) {
         profile = profile.copy(brain = b)

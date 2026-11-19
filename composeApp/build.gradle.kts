@@ -9,7 +9,7 @@ plugins {
     id("com.android.application")
 }
 
-val appVersion = "1.1.0"
+val appVersion = "1.2.0"
 
 kotlin {
     androidTarget {

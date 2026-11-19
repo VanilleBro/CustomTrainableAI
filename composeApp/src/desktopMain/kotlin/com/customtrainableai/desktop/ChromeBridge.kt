@@ -2,6 +2,9 @@ package com.customtrainableai.desktop
 
 import com.customtrainableai.engine.BrowserControl
 import com.customtrainableai.engine.ValueProbe
+import com.customtrainableai.model.BrowserConfig
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import com.customtrainableai.model.ScreenPoint
 import com.customtrainableai.model.ScreenRect
 import com.sun.jna.platform.win32.WinDef.HWND
@@ -103,6 +106,9 @@ class CdpSession(wsUrl: String, client: HttpClient) {
         send(method, params, false)
     }
 
+    /** Befehl senden; die Antwort kann später abgewartet werden (Eingaben bei Zeitsteuerung). */
+    fun track(method: String, params: JsonObject): CompletableFuture<JsonObject>? = send(method, params, true)
+
     /** Befehl senden und auf das Ergebnis warten. */
     suspend fun call(method: String, params: JsonObject = JsonObject(emptyMap()), timeoutMs: Long = 3000): JsonObject? {
         val f = send(method, params, true) ?: return null
@@ -132,7 +138,14 @@ class CdpSession(wsUrl: String, client: HttpClient) {
  * direkt an den jeweiligen Tab – unabhängig von Maus und Tastatur-Fokus.
  */
 class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserControl, ValueProbe {
-    class Tab(val id: String, val session: CdpSession) {
+    class Tab(val id: String, val session: CdpSession, @Volatile var url: String = "") {
+        /** Zeitsteuerung ist in diesem Tab eingerichtet. */
+        @Volatile var armed = false
+        /** Letztes Bild (JPEG, nur das Spielfeld) und Werte aus dem letzten Zeitschritt. */
+        @Volatile var stepJpeg: ByteArray? = null
+        @Volatile var stepVals: DoubleArray? = null
+        /** Noch nicht bestätigte Eingaben (müssen vor dem nächsten Zeitschritt angekommen sein). */
+        val inflight = java.util.concurrent.ConcurrentLinkedQueue<CompletableFuture<JsonObject>>()
         /** Sichtbarer Seitenbereich auf dem Bildschirm (Java-Koordinaten). */
         @Volatile var viewport: ScreenRect? = null
         /** CSS-Pixel pro Java-Pixel. */
@@ -145,12 +158,49 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
         @Volatile var streaming = false
         var decodedFrom: ByteArray? = null
         var decoded: java.awt.image.BufferedImage? = null
+        /** Fertig umgewandeltes Bild (ARGB) des letzten Zeitschritts. */
+        var frame: com.customtrainableai.engine.Frame? = null
     }
 
     private val http = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(800)).build()
     private val tabs = CopyOnWriteArrayList<Tab>()
     private var browserSession: CdpSession? = null
     @Volatile private var lastRefresh = 0L
+
+    /** Spielzeit wird von der KI Schritt für Schritt weitergeschaltet (alle Tabs in einem Fenster). */
+    @Volatile var timeControl = true
+        private set
+    /** Chrome läuft unsichtbar (ohne Fenster). */
+    @Volatile var hidden = true
+        private set
+    /** Gerade läuft ein Training mit Zeitsteuerung. */
+    @Volatile var stepping = false
+        private set
+    @Volatile private var gameUrl = ""
+    @Volatile private var stepScripts: List<String> = emptyList()
+    @Volatile private var stepExpr = ""
+    /** Von der App gestartetes Chrome (wird beim Beenden geschlossen, wenn es unsichtbar läuft). */
+    @Volatile private var process: Process? = null
+
+    init {
+        Runtime.getRuntime().addShutdownHook(Thread { shutdown() })
+        // Bilder nur im Speicher dekodieren (sonst legt ImageIO für jedes Bild eine Cache-Datei auf der Festplatte an)
+        javax.imageio.ImageIO.setUseCache(false)
+    }
+
+    /** Messwerte: Zeit fürs Dekodieren der Bilder (für Diagnose). */
+    val decodeNanos = java.util.concurrent.atomic.AtomicLong()
+
+    /** Unsichtbares Chrome beim Beenden der App mit schließen (sonst liefe es unbemerkt weiter). */
+    fun shutdown() {
+        val p = process ?: return
+        if (!launchedHidden) return
+        runCatching { browser()?.fire("Browser.close") }
+        runCatching { if (!p.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS)) p.destroy() }
+        process = null
+    }
+
+    @Volatile private var launchedHidden = false
 
     // ---------------- Chrome finden und starten ----------------
 
@@ -195,19 +245,30 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
             .filter { val u = it["url"]?.jsonPrimitive?.contentOrNull ?: ""; !u.startsWith("devtools://") && !u.startsWith("chrome") }
     }
 
-    private fun launch(exe: String, url: String) {
+    /**
+     * Startet Chrome. [url] = null: leeres Fenster (Tabs werden danach geöffnet), sonst App-Fenster mit der Seite.
+     * [headless] = unsichtbar, ganz ohne Fenster.
+     */
+    private fun launch(exe: String, url: String?, headless: Boolean): Process {
         val profile = File(baseDir, "chrome-profil").apply { mkdirs() }
-        val args = listOf(
+        val args = mutableListOf(
             exe,
             "--remote-debugging-port=$port",
             "--user-data-dir=${profile.absolutePath}",
             "--no-first-run", "--no-default-browser-check",
-            // Fenster im Hintergrund nicht drosseln, sonst läuft das Spiel langsamer
+            // Fenster/Tabs im Hintergrund nicht drosseln, sonst läuft das Spiel langsamer
             "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling",
-            "--app=$url",
+            "--window-size=480,1000",
         )
-        ProcessBuilder(args).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+        // Zeichnen auf der CPU: bei vielen Tabs deutlich schneller (jeder Tab rechnet in seinem eigenen Prozess)
+        if (timeControl) args += "--disable-accelerated-2d-canvas"
+        if (headless) args += "--headless=new"
+        args += if (url != null) "--app=$url" else "about:blank"
+        return ProcessBuilder(args).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
     }
+
+    /** Läuft das verbundene Chrome unsichtbar? */
+    private fun runningHeadless(): Boolean = get("/json/version")?.contains("Headless", ignoreCase = true) == true
 
     /** Verbindet sich mit allen offenen Seiten (z.B. nach Neustart der App). */
     @Synchronized
@@ -217,9 +278,30 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
         tabs.filter { it.id !in ids || !it.session.open }.forEach { it.session.close(); tabs.remove(it) }
         for (t in targets) {
             val id = t["id"]?.jsonPrimitive?.contentOrNull ?: continue
-            if (tabs.any { it.id == id }) continue
+            val url = t["url"]?.jsonPrimitive?.contentOrNull ?: ""
+            val known = tabs.firstOrNull { it.id == id }
+            if (known != null) { known.url = url; continue }
             val ws = t["webSocketDebuggerUrl"]?.jsonPrimitive?.contentOrNull ?: continue
-            runCatching { tabs += Tab(id, CdpSession(ws, http)) }
+            runCatching { tabs += Tab(id, CdpSession(ws, http), url) }
+        }
+    }
+
+    private fun origin(url: String): String = runCatching { URI(url).let { "${it.scheme}://${it.authority}" } }.getOrDefault(url)
+
+    /**
+     * Zeitsteuerung in einem Tab einrichten: Das Skript ersetzt requestAnimationFrame, performance.now und die Timer
+     * der Seite. Solange die KI nicht steuert, läuft die Seite normal in Echtzeit; beim Training schaltet die KI die
+     * Spielzeit Schritt für Schritt weiter – deshalb muss der Tab weder sichtbar noch im Vordergrund sein.
+     * [navigateTo] = Seite danach laden; sonst neu laden, falls die Seite noch ohne Zeitsteuerung läuft.
+     */
+    private suspend fun arm(t: Tab, navigateTo: String? = null) {
+        t.session.call("Page.enable")
+        t.session.call("Page.addScriptToEvaluateOnNewDocument", buildJsonObject { put("source", TIME_JS) })
+        t.armed = true
+        if (navigateTo != null) {
+            t.session.call("Page.navigate", buildJsonObject { put("url", navigateTo) })
+        } else if (t.session.eval("typeof window.__ctaiT")?.jsonPrimitive?.contentOrNull != "object") {
+            t.session.call("Page.reload")
         }
     }
 
@@ -235,35 +317,89 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
         return tabs.size
     }
 
-    override suspend fun open(url: String, count: Int): String? = withContext(Dispatchers.IO) {
-        val n = count.coerceIn(1, 12)
+    override suspend fun open(cfg: BrowserConfig): String? = withContext(Dispatchers.IO) {
+        val url = cfg.url.trim()
         val exe = chromePath() ?: return@withContext "Chrome wurde nicht gefunden (auch kein Edge)."
         if (!url.startsWith("http")) return@withContext "Bitte eine vollständige Adresse eingeben (https://…)."
-        if (alive()) syncTabs()
-        var have = tabs.size
+        stepping = false
+        timeControl = cfg.timeControl
+        hidden = cfg.hidden
+        gameUrl = url
+        val n = cfg.windows.coerceIn(1, if (timeControl) MAX_TABS else 12)
+        // Läuft Chrome im falschen Modus (sichtbar/unsichtbar), neu starten
+        if (alive() && runningHeadless() != hidden) {
+            runCatching { browser()?.call("Browser.close") }
+            browserSession = null
+            var w = 0
+            while (alive() && w < 8000) { delay(250); w += 250 }
+            tabs.forEach { it.session.close() }
+            tabs.clear()
+        }
         if (!alive()) {
-            launch(exe, url)
-            have = 0
+            process = launch(exe, if (timeControl || hidden) null else url, hidden)
+            launchedHidden = hidden
             var waited = 0
             while (!alive() && waited < 15000) { delay(250); waited += 250 }
             if (!alive()) return@withContext "Chrome startet nicht mit Fernsteuerung. Läuft Chrome schon mit demselben Profil?"
-            delay(800)
+            delay(500)
+        }
+        syncTabs()
+        if (timeControl) {
+            // Alles in EINEM Fenster: n Tabs mit dem Spiel, übrige Tabs (z.B. leere) schließen
+            val b = browser() ?: return@withContext "Keine Verbindung zu Chrome."
+            val site = origin(url)
+            val game = tabs.filter { origin(it.url) == site }
+            val missing = n - game.size
+            val created = ArrayList<String>()
+            repeat(missing.coerceAtLeast(0)) {
+                b.call("Target.createTarget", buildJsonObject { put("url", "about:blank") })
+                    ?.get("targetId")?.jsonPrimitive?.contentOrNull?.let { created += it }
+            }
             syncTabs()
-            have = tabs.size
+            for (t in tabs) {
+                when {
+                    t.id in created -> arm(t, navigateTo = url)
+                    origin(t.url) == site -> if (!t.armed) arm(t)
+                }
+            }
+            val keep = (game.take(n).map { it.id } + created).toSet()
+            for (t in tabs.filter { it.id !in keep }) b.call("Target.closeTarget", buildJsonObject { put("targetId", t.id) })
+            var waited = 0
+            while (waited < 10000) {
+                syncTabs()
+                if (tabs.size <= n && tabs.count { origin(it.url) == site } >= n) break
+                delay(300); waited += 300
+            }
+        } else {
+            var have = tabs.size
+            repeat((n - have).coerceAtLeast(0)) {
+                if (hidden) {
+                    browser()?.call("Target.createTarget", buildJsonObject { put("url", url); put("newWindow", true) })
+                } else {
+                    launch(exe, url, false)
+                    delay(700)
+                }
+            }
+            var waited = 0
+            while (waited < 10000) {
+                syncTabs()
+                if (tabs.size >= n) break
+                delay(300); waited += 300
+            }
+            if (!hidden) tile()
         }
-        repeat((n - have).coerceAtLeast(0)) {
-            launch(exe, url)
-            delay(700)
-        }
-        var waited = 0
-        while (waited < 10000) {
-            syncTabs()
-            if (tabs.size >= n) break
-            delay(300); waited += 300
-        }
-        if (tabs.isEmpty()) return@withContext "Keine Chrome-Fenster gefunden."
-        tile()
+        if (tabs.isEmpty()) return@withContext "Keine Chrome-Tabs gefunden."
         null
+    }
+
+    /** Chrome schließen (z.B. um den Modus zu wechseln oder Rechenzeit freizugeben). */
+    override suspend fun closeAll() = withContext(Dispatchers.IO) {
+        stepping = false
+        runCatching { browser()?.call("Browser.close") }
+        browserSession = null
+        tabs.forEach { it.session.close() }
+        tabs.clear()
+        process = null
     }
 
     /**
@@ -369,7 +505,12 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
         for ((i, t) in tabs.withIndex()) {
             val c = canvasRect(t, sel) ?: continue
             t.canvas = c
-            startStream(t)
+            if (timeControl) {
+                // Erstes Bild direkt aus dem Spielfeld holen (für die Vorschau)
+                runCatching { stepTab(t, 0.0, sel, "", setFree = false) }
+            } else {
+                startStream(t)
+            }
             result += ScreenRect(VIRTUAL_X + i * VIRTUAL_STEP, 0, c[2].toInt().coerceAtLeast(8), c[3].toInt().coerceAtLeast(8))
         }
         return result
@@ -413,6 +554,20 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
     fun frameFor(area: ScreenRect): com.customtrainableai.engine.Frame? {
         val t = tabFor(area) ?: return null
         val c = t.canvas ?: return null
+        if (timeControl) {
+            // Bild aus dem Zeitschritt: einmal dekodieren und als fertiges Frame merken
+            val bytes = t.stepJpeg ?: return null
+            val f = synchronized(t) {
+                if (t.decodedFrom !== bytes) {
+                    val d0 = System.nanoTime()
+                    t.frame = runCatching { decodeRaw(bytes) }.getOrNull()
+                    t.decodedFrom = bytes
+                    decodeNanos.addAndGet(System.nanoTime() - d0)
+                }
+                t.frame
+            } ?: return null
+            return com.customtrainableai.engine.Frame(f.width, f.height, f.argb, area.w.toFloat() / f.width)
+        }
         val bytes = t.jpeg ?: return null
         // Nur das Spielfeld dekodieren, in halber Auflösung (reicht für die KI und spart viel Rechenzeit)
         val img = synchronized(t) {
@@ -426,6 +581,40 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
         val h = img.height
         val px = img.getRGB(0, 0, w, h, null, 0, w)
         return com.customtrainableai.engine.Frame(w, h, px, area.w.toFloat() / w)
+    }
+
+    /** Diagnose: Umwandlungs-Zeit eines Bildes (ms), einzeln gemessen. */
+    fun benchDecode(n: Int): String {
+        val bytes = tabs.firstNotNullOfOrNull { it.stepJpeg } ?: return "kein Bild"
+        repeat(20) { decodeRaw(bytes) }
+        val t0 = System.nanoTime()
+        repeat(n) { decodeRaw(bytes) }
+        val f = decodeRaw(bytes)
+        return "${bytes.size} Bytes, ${f?.width}x${f?.height}: ${"%.3f".format((System.nanoTime() - t0) / 1e6 / n)} ms je Bild"
+    }
+
+    /** Rohbild "raw:BxH:base64(RGB)" aus dem Zeitschritt in ARGB umwandeln. */
+    private fun decodeRaw(bytes: ByteArray): com.customtrainableai.engine.Frame? {
+        // Kopf "raw:" + Breite + "x" + Höhe + ":" lesen
+        var i = 4
+        var w = 0
+        while (i < bytes.size && bytes[i] != 'x'.code.toByte()) { w = w * 10 + (bytes[i] - '0'.code.toByte()); i++ }
+        i++
+        var h = 0
+        while (i < bytes.size && bytes[i] != ':'.code.toByte()) { h = h * 10 + (bytes[i] - '0'.code.toByte()); i++ }
+        i++
+        if (w <= 0 || h <= 0) return null
+        val rgb = java.util.Base64.getDecoder().decode(java.nio.ByteBuffer.wrap(bytes, i, bytes.size - i))
+        val n = w * h
+        if (rgb.remaining() < n * 3) return null
+        val px = IntArray(n)
+        for (k in 0 until n) {
+            val r = rgb.get().toInt() and 255
+            val g = rgb.get().toInt() and 255
+            val b = rgb.get().toInt() and 255
+            px[k] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        return com.customtrainableai.engine.Frame(w, h, px)
     }
 
     private fun decodeRegion(bytes: ByteArray, c: DoubleArray, deviceWidth: Double): java.awt.image.BufferedImage? {
@@ -496,14 +685,101 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
         if (tabs.any { it.viewport == null } && System.currentTimeMillis() - lastRefresh > 3000) refreshViewports()
     }
 
-    override suspend fun prepare() {
+    override suspend fun prepare(cfg: BrowserConfig?) {
+        if (cfg != null) timeControl = cfg.timeControl
         if (connected() == 0) return
-        // Spielfelder neu vermessen und Bild-Stream (wieder) starten
         val sel = JsonPrimitive(lastSelector.ifBlank { "canvas" }).toString()
+        if (timeControl) {
+            // Zeitsteuerung in allen Tabs sicherstellen (z.B. nach Neustart der App), dann ersten Schritt holen
+            var reloaded = false
+            for (t in tabs) {
+                if (!t.armed || t.session.eval("typeof window.__ctaiT")?.jsonPrimitive?.contentOrNull != "object") {
+                    arm(t); reloaded = true
+                }
+            }
+            if (reloaded) delay(4000)
+            for (t in tabs) {
+                canvasRect(t, sel)?.let { t.canvas = it }
+                if (t.streaming) { t.session.call("Page.stopScreencast"); t.streaming = false }
+                t.stepJpeg = null
+                t.stepVals = null
+            }
+            stepScripts = emptyList()
+            stepExpr = ""
+            stepping = true
+            advanceAll(0.0)
+            return
+        }
+        // Spielfelder neu vermessen und Bild-Stream (wieder) starten
         for (t in tabs) {
             canvasRect(t, sel)?.let { t.canvas = it }
             if (!t.streaming || t.jpeg == null) startStream(t)
         }
+    }
+
+    /** Nach dem Training: Seiten laufen wieder normal in Echtzeit. */
+    override suspend fun release() {
+        stepping = false
+        for (t in tabs) runCatching { t.session.eval("window.__ctaiT&&(window.__ctaiT.free=true)") }
+    }
+
+    /** Uhr für die KI: jeder Takt schaltet die Spielzeit in allen Tabs gleichzeitig weiter. */
+    override fun stepClock(): com.customtrainableai.engine.Clock = object : com.customtrainableai.engine.Clock {
+        private var t = 0.0
+        override fun now() = t
+        override suspend fun sleep(seconds: Double) {
+            if (seconds <= 0.0) { kotlinx.coroutines.yield(); return }
+            advanceAll(seconds * 1000.0)
+            t += seconds
+        }
+    }
+
+    /** Spielzeit in allen Tabs um [ms] weiterschalten; danach liegen Bild und Regel-Werte jedes Tabs bereit. */
+    suspend fun advanceAll(ms: Double) {
+        val sel = JsonPrimitive(lastSelector.ifBlank { "canvas" }).toString()
+        val expr = stepExpr
+        val list = tabs.filter { it.canvas != null }
+        if (list.isEmpty()) { delay((ms).toLong().coerceIn(1, 1000)); return }
+        val t0 = System.nanoTime()
+        kotlinx.coroutines.coroutineScope {
+            list.map { t -> async(Dispatchers.IO) { runCatching { stepTab(t, ms, sel, expr, setFree = true) } } }.awaitAll()
+        }
+        stepNanos.addAndGet(System.nanoTime() - t0)
+        stepCount.incrementAndGet()
+    }
+
+    /** Messwerte: Zeit in Zeitschritten (für Diagnose). */
+    val stepNanos = java.util.concurrent.atomic.AtomicLong()
+    val stepCount = AtomicInteger()
+
+    private suspend fun stepTab(t: Tab, ms: Double, sel: String, expr: String, setFree: Boolean) {
+        // Eingaben dieses Takts müssen angekommen sein, bevor die Zeit weiterläuft
+        while (true) {
+            val f = t.inflight.poll() ?: break
+            withTimeoutOrNull(1500) { f.await() }
+        }
+        val free = if (setFree) "T.free=false;" else ""
+        val js = "(()=>{const T=window.__ctaiT;if(!T)return null;${free}T.advance(${"%.3f".format(java.util.Locale.ROOT, ms)});" +
+            "return [T.obs($sel)${if (expr.isNotEmpty()) ",$expr" else ""}]})()"
+        val arr = t.session.eval(js, 4000) as? JsonArray
+        if (arr == null) {
+            t.stepJpeg = null
+            t.stepVals = null
+            return
+        }
+        val img = arr.getOrNull(0)?.jsonPrimitive?.contentOrNull
+        t.stepJpeg = img?.takeIf { it.startsWith("raw:") }?.toByteArray(Charsets.ISO_8859_1)
+        t.stepVals = if (expr.isEmpty()) null else DoubleArray(arr.size - 1) { i -> arr[i + 1].jsonPrimitive.doubleOrNull ?: Double.NaN }
+    }
+
+    /** Aktuelle Bilder aller Tabs (für die Live-Ansicht in der App). */
+    override fun previews(): List<com.customtrainableai.engine.Frame?> = tabs.mapIndexed { i, t ->
+        val c = t.canvas ?: return@mapIndexed null
+        runCatching { frameFor(ScreenRect(VIRTUAL_X + i * VIRTUAL_STEP, 0, c[2].toInt().coerceAtLeast(8), c[3].toInt().coerceAtLeast(8))) }.getOrNull()
+    }
+
+    private fun scriptsExpr(scripts: List<String>) = scripts.joinToString(",") { s ->
+        if (s.isBlank()) "NaN" else "(()=>{try{const v=($s);return typeof v==='boolean'?(v?1:0):Number(v)}catch(e){return NaN}})()"
     }
 
     /** Selektor für prepare() setzen (aus dem Profil). */
@@ -511,9 +787,16 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
 
     override suspend fun values(area: ScreenRect, scripts: List<String>): DoubleArray? {
         val t = tabFor(area) ?: run { ensureViewports(); tabFor(area) } ?: return null
-        val parts = scripts.joinToString(",") { s ->
-            if (s.isBlank()) "NaN" else "(()=>{try{const v=($s);return typeof v==='boolean'?(v?1:0):Number(v)}catch(e){return NaN}})()"
+        if (stepping) {
+            // Werte kommen mit jedem Zeitschritt mit (ein Aufruf pro Takt statt zwei)
+            if (scripts != stepScripts) {
+                stepScripts = scripts
+                stepExpr = scriptsExpr(scripts)
+            } else {
+                t.stepVals?.takeIf { it.size == scripts.size }?.let { return it.copyOf() }
+            }
         }
+        val parts = scriptsExpr(scripts)
         val arr = t.session.eval("JSON.stringify([$parts])", 1500)?.jsonPrimitive?.contentOrNull ?: return null
         return runCatching {
             CdpJson.parseToJsonElement(arr).jsonArray.map { it.jsonPrimitive.doubleOrNull ?: Double.NaN }.toDoubleArray()
@@ -534,7 +817,7 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
 
     fun mouse(t: Tab, type: String, p: ScreenPoint, pressed: Boolean) {
         val (x, y) = cssPoint(t, p) ?: return
-        t.session.fire("Input.dispatchMouseEvent", buildJsonObject {
+        sendInput(t, "Input.dispatchMouseEvent", buildJsonObject {
             put("type", type)
             put("x", x)
             put("y", y)
@@ -552,7 +835,7 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
             } else return
         }
         val (key, code, vk) = k
-        t.session.fire("Input.dispatchKeyEvent", buildJsonObject {
+        sendInput(t, "Input.dispatchKeyEvent", buildJsonObject {
             put("type", if (down) "keyDown" else "keyUp")
             put("key", key)
             put("code", code)
@@ -562,10 +845,105 @@ class ChromeBridge(private val baseDir: File, val port: Int = 9333) : BrowserCon
         })
     }
 
+    /** Eingabe an einen Tab; bei Zeitsteuerung wird die Ankunft vor dem nächsten Zeitschritt abgewartet. */
+    private fun sendInput(t: Tab, method: String, params: JsonObject) {
+        if (stepping) t.session.track(method, params)?.let { t.inflight.add(it) } else t.session.fire(method, params)
+    }
+
     companion object {
         /** Virtuelle Bereiche für Chrome-Instanzen liegen weit außerhalb jedes Bildschirms. */
         const val VIRTUAL_X = com.customtrainableai.model.VIRTUAL_AREA_X
         const val VIRTUAL_STEP = 4000
+        /** Höchstzahl Tabs mit Zeitsteuerung. */
+        const val MAX_TABS = 64
+
+        /**
+         * Zeitsteuerung, wird in jede Seite vor deren eigenen Skripten geladen. Ersetzt requestAnimationFrame,
+         * performance.now und setTimeout/setInterval durch eine eigene Uhr:
+         * - free = true: die Uhr läuft in Echtzeit (Seite verhält sich normal),
+         * - free = false: nur T.advance(ms) schaltet weiter (die KI gibt den Takt vor, auch in versteckten Tabs).
+         * T.obs(selektor) liefert das Spielfeld verkleinert als JPEG.
+         * Netzwerk-Anfragen der Seite werden während der Zeitsteuerung über alle Tabs hinweg auf höchstens eine
+         * alle 2 Sekunden gedrosselt – sonst würden schnell laufende Timer den Server der Seite überlasten.
+         */
+        /** Breite des Bildes, das die KI pro Zeitschritt bekommt (Pixel). */
+        const val OBS_W = 100
+
+        val TIME_JS get() = TIME_JS_SRC.replace("OBS_W", OBS_W.toString())
+
+        private val TIME_JS_SRC = """
+(() => {
+  if (window.__ctaiT) return;
+  const R = { raf: window.requestAnimationFrame.bind(window), st: window.setTimeout.bind(window), si: window.setInterval.bind(window), pnow: performance.now.bind(performance), fetch: window.fetch && window.fetch.bind(window) };
+  const T = window.__ctaiT = { v: R.pnow(), free: true, q: new Map(), rid: 0, timers: new Map(), tid: 1e6 };
+  performance.now = () => T.v;
+  window.requestAnimationFrame = (cb) => { const id = ++T.rid; T.q.set(id, cb); return id; };
+  window.cancelAnimationFrame = (id) => { T.q.delete(id); };
+  window.setTimeout = (fn, ms, ...a) => { const id = ++T.tid; T.timers.set(id, { at: T.v + Math.max(0, +ms || 0), fn, a, every: 0 }); return id; };
+  window.setInterval = (fn, ms, ...a) => { const id = ++T.tid; const e = Math.max(1, +ms || 0); T.timers.set(id, { at: T.v + e, fn, a, every: e }); return id; };
+  window.clearTimeout = window.clearInterval = (id) => { T.timers.delete(id); };
+  const call = (f, a) => { try { typeof f === 'function' ? f(...a) : (0, eval)(String(f)); } catch (e) { console.error(e); } };
+  function timers() {
+    for (let n = 0; n < 2000; n++) {
+      let best = null, bid = 0;
+      for (const [id, t] of T.timers) if (t.at <= T.v && (!best || t.at < best.at)) { best = t; bid = id; }
+      if (!best) return;
+      if (best.every) best.at += best.every; else T.timers.delete(bid);
+      call(best.fn, best.a);
+    }
+  }
+  function frame() { const q = T.q; T.q = new Map(); for (const cb of q.values()) call(cb, [T.v]); }
+  T.advance = (ms) => {
+    const end = T.v + Math.max(0, ms);
+    for (let n = 0; n < 1000; n++) {
+      let next = end;
+      for (const t of T.timers.values()) if (t.at < next) next = t.at;
+      if (next >= end) break;
+      T.v = next; timers();
+    }
+    T.v = end; timers(); frame();
+  };
+  T.obs = (sel) => {
+    const c = document.querySelector(sel); if (!c) return null;
+    // Größe nur ab und zu neu messen (erzwingt sonst bei jedem Schritt ein Layout der Seite)
+    if (!T.sz || T.sz.c !== c || ++T.sz.n > 200) { const r = c.getBoundingClientRect(); T.sz = { c, n: 0, rw: r.width, rh: r.height }; }
+    const k = Math.min(0.5, OBS_W / Math.max(1, T.sz.rw));
+    const w = Math.max(8, Math.round(T.sz.rw * k)), h = Math.max(8, Math.round(T.sz.rh * k));
+    const o = T.oc || (T.oc = document.createElement('canvas'));
+    if (o.width !== w) o.width = w; if (o.height !== h) o.height = h;
+    try {
+      // Verkleinertes Spielfeld als rohe RGB-Pixel (Base64) – kein JPEG, das spart auf der App-Seite viel Rechenzeit
+      const g = o.getContext('2d', { willReadFrequently: true });
+      g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+      g.drawImage(c, 0, 0, w, h);
+      const d = g.getImageData(0, 0, w, h).data;
+      const n = w * h, rgb = new Uint8Array(n * 3);
+      for (let i = 0, j = 0; i < n; i++, j += 4) { rgb[i * 3] = d[j]; rgb[i * 3 + 1] = d[j + 1]; rgb[i * 3 + 2] = d[j + 2]; }
+      let bin = '';
+      for (let i = 0; i < rgb.length; i += 8192) bin += String.fromCharCode.apply(null, rgb.subarray(i, i + 8192));
+      return 'raw:' + w + 'x' + h + ':' + btoa(bin);
+    } catch (e) { return null; }
+  };
+  // Netzwerk drosseln, solange die KI die Zeit steuert (gemeinsam für alle Tabs der Seite)
+  const gate = () => {
+    if (T.free) return 0;
+    const now = Date.now();
+    let last = 0; try { last = +localStorage.getItem('__ctaiNet') || 0; } catch (e) {}
+    const at = Math.max(now, last + 2000);
+    try { localStorage.setItem('__ctaiNet', String(at)); } catch (e) {}
+    return at - now;
+  };
+  if (R.fetch) window.fetch = (...a) => { const w = gate(); return w > 60000 ? Promise.reject(new TypeError('gedrosselt')) : w > 0 ? new Promise((res, rej) => R.st(() => R.fetch(...a).then(res, rej), w)) : R.fetch(...a); };
+  const xs = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function (...a) { const w = gate(); if (w > 0) R.st(() => xs.apply(this, a), Math.min(w, 60000)); else xs.apply(this, a); };
+  // Solange die KI nicht steuert, läuft die Seite in Echtzeit weiter (auch in Hintergrund-Tabs)
+  let last = R.pnow();
+  const free = () => { const now = R.pnow(); if (T.free) T.advance(Math.min(100, now - last)); last = now; };
+  const loop = () => { free(); R.raf(loop); };
+  R.raf(loop);
+  R.si(() => { if (document.hidden) free(); }, 50);
+})();
+"""
         val KEY_INFO = mapOf(
             "SPACE" to Triple(" ", "Space", 32),
             "ENTER" to Triple("Enter", "Enter", 13),

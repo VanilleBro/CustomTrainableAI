@@ -134,6 +134,9 @@ fun TrainingTab(state: AppState) {
                 LinearProgressIndicator(progress = { status.evaluated.toFloat() / status.total }, modifier = Modifier.fillMaxWidth())
             }
             StatLine("Takte pro Sekunde", fmt(status.ticksPerSecond, 1))
+            if (kotlin.math.abs(status.timeFactor - 1f) > 0.05f && status.instances.isNotEmpty()) {
+                StatLine("Spieltempo je Instanz (× Echtzeit)", fmt(status.timeFactor, 2) + "×  ·  gesamt " + fmt(status.timeFactor * status.instances.size, 1) + "×")
+            }
             StatLine("Beste Fitness (Durchschnitt des Champions)", fmt(status.bestFitness, 2))
             status.instances.forEach { s ->
                 StatLine(
@@ -147,6 +150,9 @@ fun TrainingTab(state: AppState) {
         }
         if (state.simulate && p.practiceKind != null && state.simFrames.isNotEmpty()) {
             Section("Simulator – alle gleichzeitig spielenden Agenten") { SimulatorGrid(state, state.simFrames, status) }
+        }
+        if (state.browserLive && state.isRunning && state.simFrames.isNotEmpty()) {
+            Section("Live – alle Chrome-Tabs") { SimulatorGrid(state, state.simFrames, status) }
         }
     }
 

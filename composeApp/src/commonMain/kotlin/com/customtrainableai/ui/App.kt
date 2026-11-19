@@ -158,7 +158,7 @@ fun ProfileListScreen(state: AppState) {
 
         if (state.platform.browser != null) {
             Section("Browser-Spiel: Neon Flap (Chrome)") {
-                Hint("Fertige Vorlage für Neon Flap auf addict-games.netlify.app: öffnet mehrere Chrome-Fenster, stellt kleinste Lücke, höchste Geschwindigkeit und 1 \$ Einsatz ein, zählt die Tore direkt aus der Seite und erkennt den Crash.")
+                Hint("Fertige Vorlage für Neon Flap auf addict-games.netlify.app: öffnet 24 Tabs in einem unsichtbaren Chrome (du kannst nebenbei weiterarbeiten), stellt kleinste Lücke, höchste Geschwindigkeit und 1 \$ Einsatz ein, zählt die Tore direkt aus der Seite und erkennt den Crash.")
                 Button(onClick = { state.newNeonFlap() }) { Text("Vorlage: Neon Flap (Chrome)") }
             }
         }

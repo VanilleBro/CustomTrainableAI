@@ -131,6 +131,64 @@ suspend fun runTour(state: AppState, platform: DesktopPlatform, dir: File) {
     shot("06-after-editor", full = true)
 }
 
+/** Rundgang mit Chrome (Neon Flap): Tabs öffnen, kurz trainieren, Fotos der Oberfläche:  --chrometour <Ordner> */
+suspend fun runChromeTour(state: AppState, platform: DesktopPlatform, dir: File) {
+    dir.mkdirs()
+    val robot = Robot()
+    val log = File(dir, "log.txt").apply { writeText("") }
+    fun out(s: String) { println(s); log.appendText(s + System.lineSeparator()) }
+    // Nur fotografieren/scrollen, wenn das App-Fenster wirklich offen ist (sonst träfe es fremde Fenster)
+    fun appVisible(): Boolean {
+        val w = platform.mainWindow ?: return false
+        return w.isShowing && (w.extendedState and java.awt.Frame.ICONIFIED) == 0
+    }
+    suspend fun shot(name: String) {
+        delay(900)
+        if (!appVisible()) { out("Foto $name übersprungen: App-Fenster nicht sichtbar"); return }
+        val r = platform.mainWindow?.bounds ?: return
+        ImageIO.write(robot.createScreenCapture(Rectangle(r)), "png", File(dir, "$name.png"))
+    }
+    fun scroll(ticks: Int) {
+        if (!appVisible()) return
+        platform.mainWindow?.bounds?.let { b -> robot.mouseMove(b.x + b.width / 2, b.y + b.height / 2) }
+        robot.mouseWheel(ticks)
+    }
+    delay(2500)
+    platform.mainWindow?.isAlwaysOnTop = true
+    platform.mainWindow?.toFront()
+    val name = com.customtrainableai.model.Templates.neonFlap().name
+    if (runCatching { state.open(name) }.isFailure || state.profile.name != name) state.newNeonFlap()
+    // Gespeichertes Profil auf die neuen Chrome-Einstellungen bringen (24 Tabs, unsichtbar, Zeitsteuerung)
+    state.update { p -> p.copy(browser = com.customtrainableai.model.Templates.neonFlap().browser, evolution = p.evolution.copy(population = 48)) }
+    state.tab = 2
+    delay(800)
+    shot("01-bereiche")
+    state.browserOpen()
+    var w = 0
+    while (state.browserBusy && w < 90) { delay(1000); w++ }
+    out("Chrome: ${state.browserInfo.lines().last()}  (Tabs: ${platform.chrome.connected()}, Instanzen: ${state.profile.instances.size})")
+    shot("02-tabs-offen")
+    state.tab = 0
+    state.simulate = false
+    state.start(com.customtrainableai.engine.RunMode.TRAINING)
+    delay(9000)
+    platform.mainWindow?.toFront()
+    shot("03-training")
+    val s = state.activeStatus.value
+    out("Training: Gen ${s.generation}, ${fmt(s.ticksPerSecond, 1)} Takte/s, Tempo ${fmt(s.timeFactor, 2)}x, ${s.message}")
+    scroll(10)
+    shot("04-agenten")
+    scroll(10)
+    shot("05-live")
+    scroll(10)
+    shot("06-unten")
+    state.stop()
+    w = 0
+    while (state.isRunning && w < 20) { delay(500); w++ }
+    out("Gestoppt. Status: ${state.activeStatus.value.message}")
+    state.save()
+}
+
 /** Diagnose der Bildschirmaufnahme:  --capdiag <Ordner> */
 suspend fun runCapDiag(platform: DesktopPlatform, dir: File) {
     dir.mkdirs()
@@ -311,9 +369,9 @@ suspend fun runChromeTest(platform: DesktopPlatform, args: List<String>) {
     val cfg = base.browser!!
     val chrome = platform.chrome
     out("Chrome: ${chrome.chromePath()}")
-    chrome.open(cfg.url, windows)?.let { out("FEHLER open: $it"); return }
-    out("Fenster verbunden: ${chrome.connected()}")
-    delay(4000)
+    chrome.open(cfg.copy(windows = windows))?.let { out("FEHLER open: $it"); return }
+    out("Tabs verbunden: ${chrome.connected()} (unsichtbar=${cfg.hidden}, Zeitsteuerung=${cfg.timeControl})")
+    delay(5000)
     // Einstellungen setzen; solange der Name fehlt, warten (der Name wird einmal von Hand eingegeben)
     var ok = false
     for (attempt in 0 until 60) {
@@ -342,7 +400,10 @@ suspend fun runChromeTest(platform: DesktopPlatform, args: List<String>) {
         evolution = base.evolution.copy(generationsPerRun = gens),
     )
     platform.beforeRun(profile)?.let { out("FEHLER beforeRun: $it"); return }
-    val engine = Engine(platform.capturer, platform.input, RealClock, touchOnly = false, probe = chrome)
+    chrome.prepare(cfg)
+    val clock = if (cfg.timeControl) chrome.stepClock() else RealClock
+    out("Dekodier-Test: ${chrome.benchDecode(300)}")
+    val engine = Engine(platform.capturer, platform.input, clock, touchOnly = false, statusInterval = 0.5, probe = chrome)
     val start = System.currentTimeMillis()
     coroutineScope {
         val monitor = launch {
@@ -351,7 +412,11 @@ suspend fun runChromeTest(platform: DesktopPlatform, args: List<String>) {
                 val s = engine.status.value
                 val good = s.agents.count { it.state == 2 && it.score > 0 }
                 val done = s.agents.count { it.state == 2 }
-                out("  … ${(System.currentTimeMillis() - start) / 1000}s: Gen ${s.generation + 1}, ${s.evaluated}/${s.total}, ${fmt(s.ticksPerSecond, 1)} Takte/s, gut $good/$done, " +
+                val sc = chrome.stepCount.getAndSet(0)
+                val sn = chrome.stepNanos.getAndSet(0)
+                val dn = chrome.decodeNanos.getAndSet(0)
+                out("  … Zeitschritt Ø ${if (sc > 0) fmt(sn / 1e6 / sc, 1) else "-"} ms bei $sc Schritten in 10 s, Dekodieren gesamt ${fmt(dn / 1e6, 0)} ms (CPU)")
+                out("  … ${(System.currentTimeMillis() - start) / 1000}s (Spielzeit ${fmt(clock.now(), 0)}s): Gen ${s.generation + 1}, ${s.evaluated}/${s.total}, ${fmt(s.ticksPerSecond, 1)} Takte/s, gut $good/$done, " +
                     s.instances.joinToString { "${it.phase}(${fmt(it.reward, 1)})" } + (if (s.message.isNotBlank()) "  [${s.message}]" else "") +
                     (platform.input.warning?.let { "  !$it" } ?: ""))
             }
@@ -361,7 +426,7 @@ suspend fun runChromeTest(platform: DesktopPlatform, args: List<String>) {
             val store = com.customtrainableai.engine.ProfileStore(platform.storage) { platform.timestamp() }
             val saved = store.listProfiles().firstOrNull { it == profile.name }?.let { runCatching { store.load(it) }.getOrNull() }
             val run = if (saved?.brain != null && args.getOrNull(3) == "weiter") profile.copy(brain = saved.brain) else profile
-            engine.run(run, RunMode.TRAINING, startDelaySec = 1.0) { b ->
+            engine.run(run, RunMode.TRAINING, startDelaySec = if (cfg.timeControl) 0.0 else 1.0) { b ->
                 val h = b.history.last()
                 out("Generation ${h.gen}: bester=${fmt(h.best)} Ø=${fmt(h.avg)} min=${fmt(h.min)}  (${(System.currentTimeMillis() - start) / 1000}s)")
                 runCatching { store.save(profile.name, profile.copy(brain = b)) }
@@ -370,5 +435,6 @@ suspend fun runChromeTest(platform: DesktopPlatform, args: List<String>) {
         }
         monitor.cancel()
     }
+    chrome.release()
     out("Fertig nach ${(System.currentTimeMillis() - start) / 1000}s. ${engine.status.value.message}")
 }

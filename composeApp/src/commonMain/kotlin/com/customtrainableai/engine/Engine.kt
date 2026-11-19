@@ -54,7 +54,10 @@ data class EngineStatus(
     val history: List<GenStats> = emptyList(),
     val playback: List<Float> = emptyList(),
     val bestFitness: Float = 0f,
+    /** Takte pro echter Sekunde. */
     val ticksPerSecond: Float = 0f,
+    /** Spielzeit pro echter Sekunde (1 = Echtzeit; mit Zeitsteuerung/Simulator auch mehr). */
+    val timeFactor: Float = 1f,
     val countdown: Int = 0,
     val message: String = "",
     /** Alle Agenten der laufenden Generation. */
@@ -204,8 +207,12 @@ class Engine(
         var stuckMsg: String? = null
         var lastGenScores: List<Float> = emptyList()
         var tickCount = 0
-        var tpsStart = clock.now()
+        // Takte und Tempo immer in echter Zeit messen (die Engine-Uhr kann virtuell sein)
+        val wall = kotlin.time.TimeSource.Monotonic
+        var tpsMark = wall.markNow()
+        var tpsClock = clock.now()
         var tps = 0f
+        var factor = 1f
 
         while (true) {
             currentCoroutineContext().ensureActive()
@@ -401,10 +408,13 @@ class Engine(
             // 6) Status melden
             tickCount++
             val after = clock.now()
-            if (after - tpsStart >= 1.0) {
-                tps = (tickCount / (after - tpsStart)).toFloat()
+            val real = tpsMark.elapsedNow().inWholeMicroseconds / 1e6
+            if (real >= 1.0) {
+                tps = (tickCount / real).toFloat()
+                factor = ((after - tpsClock) / real).toFloat()
                 tickCount = 0
-                tpsStart = after
+                tpsMark = wall.markNow()
+                tpsClock = after
             }
             if (after - lastStatus >= statusInterval) {
                 lastStatus = after
@@ -425,6 +435,7 @@ class Engine(
                     playback = playbackScores.toList(),
                     bestFitness = bestFitness,
                     ticksPerSecond = tps,
+                    timeFactor = factor,
                     message = pauseMsg ?: stuckMsg ?: message,
                     agents = if (mode != RunMode.TRAINING) emptyList() else (0 until popSize).map { a ->
                         val slot = slots.firstOrNull { it.agent == a && it.phase != Phase.IDLE }

@@ -116,7 +116,7 @@ object Templates {
   const nameBox=[...document.querySelectorAll('input')].find(e=>e.offsetParent&&!['range','number','checkbox','radio','hidden'].includes(e.type)&&!e.closest('.arcade-box'));
   let acc={};try{acc=JSON.parse(localStorage.getItem('addictgames_v1')||'{}')}catch(e){}
   if(nameBox&&acc.name){location.reload();return 'reload'}
-  if(nameBox)return 'Bitte im Fenster einmal einen Namen eingeben';
+  if(nameBox)return 'Bitte einmal einen Namen eingeben (dazu „unsichtbar“ ausschalten und Chrome öffnen)';
   const setV=(el,v)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,String(v));el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))};
   const r=[...document.querySelectorAll('input[type=range]')];
   if(r[0])setV(r[0],r[0].max);
@@ -139,7 +139,7 @@ object Templates {
         ),
         tickRate = 20,
         network = NetworkConfig(hidden = listOf(16), gridW = 8, gridH = 12, motion = true),
-        evolution = EvolutionConfig(population = 24, generationsPerRun = 0, experiment = 0.35f),
+        evolution = EvolutionConfig(population = 48, generationsPerRun = 0, experiment = 0.35f),
         rewards = RewardSetup(
             rules = listOf(
                 RewardRule(
@@ -147,7 +147,7 @@ object Templates {
                     name = "Überleben (nur solange geflogen wird)",
                     reward = 0.5f,
                     measure = Measure.LEVEL,
-                    script = "(()=>{const o=document.querySelector('.arcade-overlay');return o&&o.offsetParent?0:1})()",
+                    script = "(()=>{const o=document.querySelector('.arcade-overlay');return o&&!o.hidden?0:1})()",
                 ),
                 RewardRule(
                     type = RuleType.OBJECT_TRACK,
@@ -174,7 +174,7 @@ object Templates {
                     name = "Crash = Game Over",
                     reward = -5f,
                     endsEpisode = true,
-                    script = "(()=>{const o=document.querySelector('.arcade-overlay');return !!(o&&o.offsetParent&&/Crash/.test(o.textContent))})()",
+                    script = "(()=>{const o=document.querySelector('.arcade-overlay');return !!(o&&!o.hidden&&/Crash/.test(o.textContent))})()",
                 ),
                 RewardRule(
                     type = RuleType.BROWSER_JS,
@@ -182,7 +182,7 @@ object Templates {
                     reward = -5f,
                     endsEpisode = true,
                     delaySec = 0.5f,
-                    script = "(()=>{const o=document.querySelector('.arcade-overlay');const run=!(o&&o.offsetParent);const t=performance.now();if(run||!window.__ctaiRun)window.__ctaiRun=t;return !run&&t-window.__ctaiRun>2000})()",
+                    script = "(()=>{const o=document.querySelector('.arcade-overlay');const run=!(o&&!o.hidden);const t=performance.now();if(run||!window.__ctaiRun)window.__ctaiRun=t;return !run&&t-window.__ctaiRun>2000})()",
                 ),
             ),
             episode = EpisodeConfig(
@@ -193,7 +193,7 @@ object Templates {
                 resetAtStart = true,
             ),
         ),
-        browser = BrowserConfig(url = NEON_FLAP_URL, windows = 12, selector = ".arcade-box canvas", setupScript = NEON_FLAP_SETUP),
+        browser = BrowserConfig(url = NEON_FLAP_URL, windows = 24, selector = ".arcade-box canvas", setupScript = NEON_FLAP_SETUP),
     )
 
     /** Die Vorlage an mehrere Bereiche anpassen. */
