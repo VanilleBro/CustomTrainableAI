@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CustomTrainableAI</string>
+    <string name="practice_name">CTAI Übungsspiel</string>
+    <string name="accessibility_label">CustomTrainableAI Steuerung</string>
+    <string name="accessibility_description">Erlaubt CustomTrainableAI, beim Training und Abspielen Tipp-, Halte- und Wischgesten im ausgewählten Spielbereich auszuführen. Mit der Lautstärke-leiser-Taste wird das Training gestoppt. Es werden keine Inhalte gelesen oder gesendet.</string>
+</resources>

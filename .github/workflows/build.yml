@@ -1,0 +1,81 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: APK bauen
+        run: |
+          chmod +x gradlew
+          ./gradlew :composeApp:assembleRelease --no-daemon
+          cp composeApp/build/outputs/apk/release/composeApp-release.apk CustomTrainableAI-Android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CustomTrainableAI-Android
+          path: CustomTrainableAI-Android.apk
+
+  windows:
+    name: Windows (Tests + EXE)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Lern-Tests
+        run: ./gradlew :composeApp:desktopTest --no-daemon
+      - name: Programm bauen
+        run: ./gradlew :composeApp:createDistributable --no-daemon
+      - name: Schnelltest der fertigen EXE
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath composeApp/build/compose/binaries/main/app/CustomTrainableAI/CustomTrainableAI.exe -ArgumentList "--smoketest", "smoketest.txt" -Wait -PassThru
+          Get-Content smoketest.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path composeApp/build/compose/binaries/main/app/CustomTrainableAI -DestinationPath CustomTrainableAI-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CustomTrainableAI-Windows
+          path: CustomTrainableAI-Windows.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: composeApp/build/reports/tests
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/CustomTrainableAI-Android.apk
+            dist/CustomTrainableAI-Windows.zip
+          generate_release_notes: true
